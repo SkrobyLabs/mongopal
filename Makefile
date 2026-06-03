@@ -136,7 +136,7 @@ build/appicon.png: build/appicon.svg
 		echo "ImageMagick not found. Install 'magick' or 'convert' to generate build/appicon.png."; \
 		exit 1; \
 	fi
-	$(MAGICK) -background none $< -resize 1024x1024 $@
+	"$(MAGICK)" -background none $< -resize 1024x1024 $@
 
 .require-wails:
 	@if [ ! -x "$(WAILS)" ]; then \
@@ -150,7 +150,7 @@ build: .require-wails appicon generate
 
 # Build for production (optimized)
 build-prod: .require-wails appicon generate
-	$(WAILS) build -production $(BUILD_FLAGS)
+	$(WAILS) build $(BUILD_FLAGS)
 
 # Build for specific platforms
 build-darwin: appicon generate build-macos-amd64 build-macos-arm64
@@ -160,22 +160,22 @@ build-windows: build-windows-amd64
 build-linux: build-linux-amd64
 
 build-windows-amd64: .require-wails appicon generate
-	$(WAILS) build -production -platform windows/amd64 -o MongoPal-windows-amd64.exe $(BUILD_FLAGS)
+	$(WAILS) build -platform windows/amd64 -o MongoPal-windows-amd64.exe $(BUILD_FLAGS)
 
 build-macos-amd64: .require-wails appicon generate
-	$(WAILS) build -production -platform darwin/amd64 -o MongoPal-macos-amd64 $(BUILD_FLAGS)
+	$(WAILS) build -platform darwin/amd64 -o MongoPal-macos-amd64 $(BUILD_FLAGS)
 	@if [ -d build/bin/MongoPal.app ] && [ ! -d build/bin/MongoPal-macos-amd64.app ]; then mv build/bin/MongoPal.app build/bin/MongoPal-macos-amd64.app; fi
 	@if [ -d build/bin/mongopal.app ] && [ ! -d build/bin/MongoPal-macos-amd64.app ]; then mv build/bin/mongopal.app build/bin/MongoPal-macos-amd64.app; fi
 	@test -d build/bin/MongoPal-macos-amd64.app
 
 build-macos-arm64: .require-wails appicon generate
-	$(WAILS) build -production -platform darwin/arm64 -o MongoPal-macos-arm64 $(BUILD_FLAGS)
+	$(WAILS) build -platform darwin/arm64 -o MongoPal-macos-arm64 $(BUILD_FLAGS)
 	@if [ -d build/bin/MongoPal.app ] && [ ! -d build/bin/MongoPal-macos-arm64.app ]; then mv build/bin/MongoPal.app build/bin/MongoPal-macos-arm64.app; fi
 	@if [ -d build/bin/mongopal.app ] && [ ! -d build/bin/MongoPal-macos-arm64.app ]; then mv build/bin/mongopal.app build/bin/MongoPal-macos-arm64.app; fi
 	@test -d build/bin/MongoPal-macos-arm64.app
 
 build-linux-amd64: .require-wails appicon generate
-	$(WAILS) build -production -platform linux/amd64 -o MongoPal-linux-amd64 $(BUILD_FLAGS)
+	$(WAILS) build -platform linux/amd64 -o MongoPal-linux-amd64 $(BUILD_FLAGS)
 
 # ===========================================
 # Testing
