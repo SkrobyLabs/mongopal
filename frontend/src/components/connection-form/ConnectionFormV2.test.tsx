@@ -158,7 +158,7 @@ describe('ConnectionFormV2', () => {
       expect(screen.getByText('Import from URI...')).toBeInTheDocument()
     })
 
-    it('parses URI into form fields', () => {
+    it('parses URI into form fields', async () => {
       const onSave = vi.fn()
       const onCancel = vi.fn()
       render(<ConnectionFormV2 folders={mockFolders} onSave={onSave} onCancel={onCancel} />)
@@ -179,12 +179,12 @@ describe('ConnectionFormV2', () => {
       fireEvent.click(screen.getByText('Parse into Form'))
 
       // Should switch back to Form mode
-      waitFor(() => {
+      await waitFor(() => {
         expect(screen.getByText('Connection')).toBeInTheDocument()
       })
     })
 
-    it('shows error for invalid URI', () => {
+    it('shows error for invalid URI', async () => {
       const onSave = vi.fn()
       const onCancel = vi.fn()
       render(<ConnectionFormV2 folders={mockFolders} onSave={onSave} onCancel={onCancel} />)
@@ -203,7 +203,7 @@ describe('ConnectionFormV2', () => {
       fireEvent.click(screen.getByText('Parse into Form'))
 
       // Should show error in overlay
-      waitFor(() => {
+      await waitFor(() => {
         expect(screen.getByText(/Failed to parse URI/)).toBeInTheDocument()
       })
     })
@@ -371,7 +371,7 @@ describe('ConnectionFormV2', () => {
       expect(onCancel).toHaveBeenCalledTimes(1)
     })
 
-    it('navigates tabs with Cmd+[', () => {
+    it('navigates tabs with Cmd+[', async () => {
       const onSave = vi.fn()
       const onCancel = vi.fn()
       render(<ConnectionFormV2 folders={mockFolders} onSave={onSave} onCancel={onCancel} />)
@@ -383,13 +383,13 @@ describe('ConnectionFormV2', () => {
       fireEvent.keyDown(window, { key: '[', metaKey: true })
 
       // Should be back on Connection tab
-      waitFor(() => {
+      await waitFor(() => {
         const connectionTab = screen.getByText('Connection').closest('button')
         expect(connectionTab).toHaveClass('border-primary') // Active tab class
       })
     })
 
-    it('navigates tabs with Cmd+]', () => {
+    it('navigates tabs with Cmd+]', async () => {
       const onSave = vi.fn()
       const onCancel = vi.fn()
       render(<ConnectionFormV2 folders={mockFolders} onSave={onSave} onCancel={onCancel} />)
@@ -398,7 +398,7 @@ describe('ConnectionFormV2', () => {
       fireEvent.keyDown(window, { key: ']', metaKey: true })
 
       // Should be on Authentication tab
-      waitFor(() => {
+      await waitFor(() => {
         const authTab = screen.getByText('Authentication').closest('button')
         expect(authTab).toHaveClass('border-primary') // Active tab class
       })

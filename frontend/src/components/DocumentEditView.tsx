@@ -71,6 +71,12 @@ interface FormattedTimestamp {
   exact: string
 }
 
+interface StaleConflictState {
+  pendingContent: string
+  latestContent: string
+  deleted?: boolean
+}
+
 /**
  * Icon component props
  */
@@ -138,6 +144,11 @@ function sortJsonString(jsonStr: string): string {
   } catch {
     return jsonStr
   }
+}
+
+function canonicalizeJsonDocument(jsonStr: string): string {
+  const parsed = JSON.parse(jsonStr) as unknown
+  return JSON.stringify(sortObjectKeys(parsed))
 }
 
 const hasOwn = (obj: Record<string, unknown>, key: string): boolean =>
@@ -366,8 +377,10 @@ export default function DocumentEditView({
   const [refreshing, setRefreshing] = useState<boolean>(false)
   const [hasChanges, setHasChanges] = useState<boolean>(false)
   const [originalContent, setOriginalContent] = useState<string>('')
+  const [lastKnownDbContent, setLastKnownDbContent] = useState<string>('')
   const [showRefreshConfirm, setShowRefreshConfirm] = useState<boolean>(false)
   const [pendingIdChangeContent, setPendingIdChangeContent] = useState<string | null>(null)
+  const [staleConflict, setStaleConflict] = useState<StaleConflictState | null>(null)
 
   // Document loading state (for restored sessions)
   const [loadingDocument, setLoadingDocument] = useState<boolean>(false)
@@ -520,6 +533,7 @@ export default function DocumentEditView({
     try {
       const jsonStr = await go.GetDocument(connectionId, database, collection, documentId)
       const doc = JSON.parse(jsonStr) as Record<string, unknown>
+      setLastKnownDbContent(JSON.stringify(doc, null, 2))
       setLoadedDocument(doc)
       // Store in tab context so it persists across tab switches
       if (updateTabDocument && tabId) updateTabDocument(tabId, doc)
@@ -548,6 +562,7 @@ export default function DocumentEditView({
       const initial = '{\n  \n}'
       setContent(initial)
       setOriginalContent(initial)
+      setLastKnownDbContent('')
       setHasChanges(false)
       // Set baseline only once for insert mode
       if (!baselineSetRef.current) {
@@ -558,6 +573,7 @@ export default function DocumentEditView({
       const formatted = JSON.stringify(effectiveDocument, null, 2)
       setContent(formatted)
       setOriginalContent(formatted)
+      setLastKnownDbContent(formatted)
       setHasChanges(false)
       // Set baseline only once when document first loads
       if (!baselineSetRef.current) {
@@ -630,6 +646,7 @@ export default function DocumentEditView({
       setContent(contentToSave)
       editorRef.current?.setValue(contentToSave)
       setOriginalContent(contentToSave)
+      setLastKnownDbContent(contentToSave)
       setHasChanges(false)
       setSaved(true)
       setTimeout(() => setSaved(false), 1500)
@@ -670,6 +687,45 @@ export default function DocumentEditView({
     }
   }
 
+  const fetchLatestDbContent = async (): Promise<string | null> => {
+    const go = getGo()
+    if (!go?.GetDocument || !documentId) {
+      return null
+    }
+
+    const jsonStr = await go.GetDocument(connectionId, database, collection, documentId)
+    return JSON.stringify(JSON.parse(jsonStr), null, 2)
+  }
+
+  const isNotFoundError = (err: unknown): boolean => {
+    const errorMsg = err instanceof Error ? err.message : String(err)
+    const normalized = errorMsg.toLowerCase()
+    return normalized.includes('not found') || normalized.includes('no document')
+  }
+
+  const saveWithConflictCheck = async (contentToSave: string): Promise<boolean> => {
+    if (lastKnownDbContent) {
+      try {
+        const latestContent = await fetchLatestDbContent()
+        if (latestContent && canonicalizeJsonDocument(latestContent) !== canonicalizeJsonDocument(lastKnownDbContent)) {
+          setStaleConflict({ pendingContent: contentToSave, latestContent })
+          return false
+        }
+      } catch (err) {
+        if (isNotFoundError(err)) {
+          setStaleConflict({ pendingContent: contentToSave, latestContent: '', deleted: true })
+          return false
+        }
+
+        const errorMsg = err instanceof Error ? err.message : String(err)
+        notify.error(getErrorSummary(errorMsg))
+        return false
+      }
+    }
+
+    return performUpdateSave(contentToSave)
+  }
+
   const handleSave = async (): Promise<void> => {
     const currentContent = editorRef.current?.getValue() || content
     let parsedDoc: Record<string, unknown>
@@ -687,7 +743,7 @@ export default function DocumentEditView({
       return
     }
 
-    await performUpdateSave(currentContent)
+    await saveWithConflictCheck(currentContent)
   }
 
   const handleInsert = async (): Promise<void> => {
@@ -713,7 +769,7 @@ export default function DocumentEditView({
 
     const restoredContent = restoreOriginalDocumentId(originalContent, pendingIdChangeContent)
     setPendingIdChangeContent(null)
-    await performUpdateSave(restoredContent)
+    await saveWithConflictCheck(restoredContent)
   }
 
   const insertChangedIdAsNew = async (): Promise<void> => {
@@ -722,6 +778,33 @@ export default function DocumentEditView({
     const contentToInsert = pendingIdChangeContent
     setPendingIdChangeContent(null)
     await performInsert(contentToInsert)
+  }
+
+  const cancelStaleConflict = (): void => {
+    setStaleConflict(null)
+  }
+
+  const reloadLatestFromConflict = (): void => {
+    if (!staleConflict || staleConflict.deleted) return
+
+    setContent(staleConflict.latestContent)
+    setOriginalContent(staleConflict.latestContent)
+    setLastKnownDbContent(staleConflict.latestContent)
+    editorRef.current?.setValue(staleConflict.latestContent)
+    setHasChanges(false)
+    setStaleConflict(null)
+    notify.info('Latest document loaded')
+  }
+
+  const overwriteStaleConflict = async (): Promise<void> => {
+    if (!staleConflict || staleConflict.deleted) {
+      setStaleConflict(null)
+      return
+    }
+
+    const contentToSave = staleConflict.pendingContent
+    setStaleConflict(null)
+    await performUpdateSave(contentToSave)
   }
 
   const handleFormat = (): void => {
@@ -745,6 +828,7 @@ export default function DocumentEditView({
         const formatted = JSON.stringify(JSON.parse(jsonStr), null, 2)
         setContent(formatted)
         setOriginalContent(formatted)
+        setLastKnownDbContent(formatted)
         editorRef.current?.setValue(formatted)
         setHasChanges(false)
         notify.success('Document refreshed')
@@ -1147,6 +1231,41 @@ export default function DocumentEditView({
         cancelLabel="Cancel"
         onConfirm={saveWithOriginalId}
         onCancel={cancelIdChangeSave}
+      />
+
+      <ConfirmDialog
+        open={staleConflict !== null}
+        title={staleConflict?.deleted ? 'Document Not Found' : 'Document Changed in Database'}
+        message={
+          staleConflict?.deleted ? (
+            <p>
+              This document no longer exists in the database. MongoPal will not recreate it from this editor tab automatically.
+            </p>
+          ) : (
+            <div className="space-y-3">
+              <p>
+                This document changed in the database after you opened it. Saving now would overwrite those newer changes.
+              </p>
+              <p>
+                Reload the latest database version, overwrite it with your editor content, or cancel and keep editing.
+              </p>
+              <div className="flex justify-end">
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  onClick={reloadLatestFromConflict}
+                >
+                  Reload Latest from Database
+                </button>
+              </div>
+            </div>
+          )
+        }
+        confirmLabel={staleConflict?.deleted ? 'Keep Editing' : saving ? 'Saving...' : 'Overwrite Anyway'}
+        cancelLabel="Cancel"
+        danger={!staleConflict?.deleted}
+        onConfirm={overwriteStaleConflict}
+        onCancel={cancelStaleConflict}
       />
     </div>
   )

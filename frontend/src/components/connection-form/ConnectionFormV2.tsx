@@ -392,8 +392,10 @@ export function ConnectionFormV2({ connection, folders, onSave, onCancel }: Conn
       setFormData(prev => ({ ...prev, ...parsed }));
       setUriParseError(null);
       setMode('form');
+      return true;
     } catch (error) {
       setUriParseError(error instanceof Error ? error.message : 'Failed to parse URI');
+      return false;
     }
   };
 
@@ -741,7 +743,11 @@ export function ConnectionFormV2({ connection, folders, onSave, onCancel }: Conn
                   Cancel
                 </button>
                 <button
-                  onClick={() => { handleParseURI(); setShowParseOverlay(false); }}
+                  onClick={() => {
+                    if (handleParseURI()) {
+                      setShowParseOverlay(false);
+                    }
+                  }}
                   disabled={!uriText.trim()}
                   className="px-3 py-1.5 text-sm bg-primary hover:bg-primary/80 text-white rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >

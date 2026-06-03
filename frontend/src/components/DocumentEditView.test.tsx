@@ -102,6 +102,9 @@ const mockConvertViewOnlyToEditable = vi.fn()
 beforeEach(() => {
   // Use type assertion to bypass the stricter GoAppBindings type from ConnectionContext
   (window as unknown as { go?: { main?: { App?: MockGoApp } } }).go = { main: { App: mockGo } }
+  mockGo.GetDocument.mockResolvedValue(JSON.stringify({ _id: 'doc123', name: 'Test User', age: 25 }))
+  mockGo.UpdateDocument.mockResolvedValue(undefined)
+  mockGo.InsertDocument.mockResolvedValue('new-doc-id')
   localStorage.clear()
   sessionStorage.clear()
   mockEditorValue = '' // Reset mock editor value
@@ -350,13 +353,13 @@ describe('DocumentEditView', () => {
     })
 
     it('saves an existing document when _id is unchanged', async () => {
-      mockGo.UpdateDocument.mockResolvedValue(undefined)
       renderEditor()
 
       await changeEditor('{"_id": "doc123", "name": "Updated User", "age": 25}')
       await clickSave()
 
       expect(mockGo.UpdateDocument).toHaveBeenCalledTimes(1)
+      expect(mockGo.GetDocument).toHaveBeenCalledWith('test-conn', 'testdb', 'users', 'doc123')
       expect(mockGo.UpdateDocument).toHaveBeenCalledWith(
         'test-conn',
         'testdb',
@@ -368,7 +371,6 @@ describe('DocumentEditView', () => {
     })
 
     it('blocks normal save and shows choices when _id changes', async () => {
-      mockGo.UpdateDocument.mockResolvedValue(undefined)
       renderEditor()
 
       await changeEditor('{"_id": "doc456", "name": "Updated User", "age": 25}')
@@ -393,7 +395,6 @@ describe('DocumentEditView', () => {
     })
 
     it('restores original _id and saves the existing document', async () => {
-      mockGo.UpdateDocument.mockResolvedValue(undefined)
       renderEditor()
 
       await changeEditor('{"_id": "doc456", "name": "Updated User", "age": 25}')
@@ -417,7 +418,7 @@ describe('DocumentEditView', () => {
     })
 
     it('inserts changed _id content as a new document', async () => {
-      mockGo.InsertDocument.mockResolvedValue('doc456')
+      mockGo.InsertDocument.mockResolvedValueOnce('doc456')
       renderEditor()
 
       const changedContent = '{"_id": "doc456", "name": "Updated User", "age": 25}'
@@ -435,7 +436,7 @@ describe('DocumentEditView', () => {
     })
 
     it('allows user-provided _id in insert mode', async () => {
-      mockGo.InsertDocument.mockResolvedValue('custom-id')
+      mockGo.InsertDocument.mockResolvedValueOnce('custom-id')
       renderEditor({ document: null, mode: 'insert' })
 
       const newContent = '{"_id": "custom-id", "name": "New User"}'
@@ -447,6 +448,75 @@ describe('DocumentEditView', () => {
       })
 
       expect(mockGo.InsertDocument).toHaveBeenCalledWith('test-conn', 'testdb', 'users', newContent)
+      expect(mockGo.UpdateDocument).not.toHaveBeenCalled()
+    })
+
+    it('blocks stale save when the database document changed', async () => {
+      mockGo.GetDocument.mockResolvedValueOnce(JSON.stringify({ _id: 'doc123', name: 'Remote User', age: 25 }))
+      renderEditor()
+
+      await changeEditor('{"_id": "doc123", "name": "Local User", "age": 25}')
+      await clickSave()
+
+      expect(screen.getByText('Document Changed in Database')).toBeInTheDocument()
+      expect(mockGo.UpdateDocument).not.toHaveBeenCalled()
+    })
+
+    it('reloads latest database content from stale conflict', async () => {
+      mockGo.GetDocument.mockResolvedValueOnce(JSON.stringify({ _id: 'doc123', name: 'Remote User', age: 26 }))
+      renderEditor()
+
+      await changeEditor('{"_id": "doc123", "name": "Local User", "age": 25}')
+      await clickSave()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Reload Latest from Database' }))
+
+      expect(screen.queryByText('Document Changed in Database')).not.toBeInTheDocument()
+      expect(screen.getByTestId('mock-editor')).toHaveValue(JSON.stringify({ _id: 'doc123', name: 'Remote User', age: 26 }, null, 2))
+      expect(screen.getByRole('button', { name: /save/i })).toBeDisabled()
+      expect(mockGo.UpdateDocument).not.toHaveBeenCalled()
+    })
+
+    it('overwrites database content after stale conflict confirmation', async () => {
+      mockGo.GetDocument.mockResolvedValueOnce(JSON.stringify({ _id: 'doc123', name: 'Remote User', age: 25 }))
+      renderEditor()
+
+      const localContent = '{"_id": "doc123", "name": "Local User", "age": 25}'
+      await changeEditor(localContent)
+      await clickSave()
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Overwrite Anyway' }))
+        await Promise.resolve()
+        vi.advanceTimersByTime(2000)
+      })
+
+      expect(mockGo.UpdateDocument).toHaveBeenCalledTimes(1)
+      expect(mockGo.UpdateDocument).toHaveBeenCalledWith('test-conn', 'testdb', 'users', 'doc123', localContent)
+    })
+
+    it('cancels stale conflict without saving', async () => {
+      mockGo.GetDocument.mockResolvedValueOnce(JSON.stringify({ _id: 'doc123', name: 'Remote User', age: 25 }))
+      renderEditor()
+
+      const localContent = '{"_id": "doc123", "name": "Local User", "age": 25}'
+      await changeEditor(localContent)
+      await clickSave()
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+
+      expect(screen.queryByText('Document Changed in Database')).not.toBeInTheDocument()
+      expect(screen.getByTestId('mock-editor')).toHaveValue(localContent)
+      expect(mockGo.UpdateDocument).not.toHaveBeenCalled()
+    })
+
+    it('does not save when the database document was deleted', async () => {
+      mockGo.GetDocument.mockRejectedValueOnce(new Error('document not found'))
+      renderEditor()
+
+      await changeEditor('{"_id": "doc123", "name": "Local User", "age": 25}')
+      await clickSave()
+
+      expect(screen.getByText('Document Not Found')).toBeInTheDocument()
       expect(mockGo.UpdateDocument).not.toHaveBeenCalled()
     })
 
