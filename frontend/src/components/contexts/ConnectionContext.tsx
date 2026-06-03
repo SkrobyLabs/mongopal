@@ -215,11 +215,15 @@ export function ConnectionProvider({ children }: ConnectionProviderProps): React
         await go.DisconnectAll()
       }
       setActiveConnections([])
+      setSelectedConnection(null)
+      setSelectedDatabase(null)
+      setSelectedCollection(null)
       onAllTabsClose?.()
     } catch (err) {
       console.error('Failed to disconnect all:', err)
       const errorMessage = err instanceof Error ? err.message : String(err)
       notify.error(getErrorSummary(errorMessage))
+      throw err
     }
   }, [notify])
 

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
 
 // =============================================================================
 // Type Definitions for Mocks
@@ -55,6 +55,7 @@ const mockConnect = vi.fn()
 const mockDisconnect = vi.fn()
 const mockDisconnectAll = vi.fn()
 const mockDisconnectOthers = vi.fn()
+const mockSetSelectedConnection = vi.fn()
 const mockSetSelectedDatabase = vi.fn()
 const mockSetSelectedCollection = vi.fn()
 const mockDuplicateConnection = vi.fn()
@@ -69,6 +70,8 @@ const mockMoveFolderToFolder = vi.fn()
 const mockLoadConnections = vi.fn()
 const mockIsConnecting = vi.fn().mockReturnValue(false)
 const mockOpenTab = vi.fn()
+const mockCloseAllTabs = vi.fn()
+let mockActiveConnections = ['conn1']
 
 vi.mock('./contexts/ConnectionContext', () => ({
   useConnection: () => ({
@@ -78,12 +81,13 @@ vi.mock('./contexts/ConnectionContext', () => ({
       { id: 'conn3', name: 'Test Environment', uri: 'mongodb://localhost:27019' },
     ] as MockConnection[],
     folders: [],
-    activeConnections: ['conn1'],
+    activeConnections: mockActiveConnections,
     isConnecting: mockIsConnecting,
     connect: mockConnect,
     disconnect: mockDisconnect,
     disconnectAll: mockDisconnectAll,
     disconnectOthers: mockDisconnectOthers,
+    setSelectedConnection: mockSetSelectedConnection,
     setSelectedDatabase: mockSetSelectedDatabase,
     setSelectedCollection: mockSetSelectedCollection,
     duplicateConnection: mockDuplicateConnection,
@@ -107,13 +111,14 @@ vi.mock('./contexts/TabContext', () => ({
     closeTabsForConnection: vi.fn(),
     closeTabsForDatabase: vi.fn(),
     closeTabsForCollection: vi.fn(),
-    closeAllTabs: vi.fn(),
+    closeAllTabs: mockCloseAllTabs,
     keepOnlyConnectionTabs: vi.fn(),
   }),
 }))
 
 // Mock window.go
 beforeEach(() => {
+  mockActiveConnections = ['conn1']
   // Update the existing window.go from test setup
   if (window.go?.main?.App) {
     window.go.main.App.ListDatabases = vi.fn().mockResolvedValue([
@@ -367,5 +372,76 @@ describe('Sidebar Search', () => {
     await waitFor(() => {
       expect(mockOpenTab).toHaveBeenCalledWith('conn1', 'myapp_production', 'users')
     })
+  })
+
+  it('disconnects all active connections from the toolbar button', async () => {
+    render(<Sidebar {...defaultProps} />)
+
+    const disconnectAllButton = screen.getByRole('button', { name: 'Disconnect all connections' })
+    expect(disconnectAllButton).toHaveAttribute('title', 'Disconnect All (1)')
+
+    fireEvent.click(disconnectAllButton)
+
+    await waitFor(() => {
+      expect(mockDisconnectAll).toHaveBeenCalledTimes(1)
+    })
+    expect(mockDisconnectAll).toHaveBeenCalledWith(mockCloseAllTabs)
+  })
+
+  it('prevents duplicate disconnect all clicks while pending', async () => {
+    let resolveDisconnect!: () => void
+    mockDisconnectAll.mockReturnValueOnce(new Promise<void>(resolve => {
+      resolveDisconnect = resolve
+    }))
+
+    render(<Sidebar {...defaultProps} />)
+
+    const disconnectAllButton = screen.getByRole('button', { name: 'Disconnect all connections' })
+    fireEvent.click(disconnectAllButton)
+
+    await waitFor(() => {
+      expect(disconnectAllButton).toBeDisabled()
+    })
+
+    fireEvent.click(disconnectAllButton)
+    expect(mockDisconnectAll).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      resolveDisconnect()
+    })
+  })
+
+  it('clears sidebar selection and loaded tree data after disconnect all', async () => {
+    const { container } = render(<Sidebar {...defaultProps} />)
+    const productionServer = getTreeItemWithText(container, 'Production Server')
+
+    fireEvent.doubleClick(productionServer)
+    await screen.findByText('myapp_production')
+
+    const productionDatabase = getTreeItemWithText(container, 'myapp_production')
+    fireEvent.doubleClick(productionDatabase)
+    await screen.findByText('users')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect all connections' }))
+
+    await waitFor(() => {
+      expect(mockDisconnectAll).toHaveBeenCalledWith(mockCloseAllTabs)
+    })
+    expect(mockSetSelectedConnection).toHaveBeenCalledWith(null)
+    expect(mockSetSelectedDatabase).toHaveBeenCalledWith(null)
+    expect(mockSetSelectedCollection).toHaveBeenCalledWith(null)
+
+    await waitFor(() => {
+      expect(findTreeItemWithText(container, 'myapp_production')).toBe(false)
+      expect(findTreeItemWithText(container, 'users')).toBe(false)
+    })
+  })
+
+  it('hides the disconnect all toolbar button when no connections are active', () => {
+    mockActiveConnections = []
+
+    render(<Sidebar {...defaultProps} />)
+
+    expect(screen.queryByRole('button', { name: 'Disconnect all connections' })).not.toBeInTheDocument()
   })
 })

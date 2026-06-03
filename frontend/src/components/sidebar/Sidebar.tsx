@@ -61,6 +61,7 @@ export default function Sidebar({
     disconnect,
     disconnectAll,
     disconnectOthers,
+    setSelectedConnection,
     setSelectedDatabase,
     setSelectedCollection,
     duplicateConnection,
@@ -95,6 +96,7 @@ export default function Sidebar({
   const [renamingFolderId, setRenamingFolderId] = useState<string | null>(null)
   const [renameFolderValue, setRenameFolderValue] = useState('')
   const [selectedItem, setSelectedItem] = useState<string | null>(null)
+  const [isDisconnectingAll, setIsDisconnectingAll] = useState(false)
   const [draggingConnectionId, setDraggingConnectionId] = useState<string | null>(null)
   const [draggingFolderId, setDraggingFolderId] = useState<string | null>(null)
   const draggingFolderIdRef = useRef<string | null>(null)
@@ -709,7 +711,26 @@ export default function Sidebar({
   }
 
   const handleDisconnectAll = async (): Promise<void> => {
-    await disconnectAll(closeAllTabs)
+    if (isDisconnectingAll) {
+      return
+    }
+
+    setIsDisconnectingAll(true)
+    try {
+      await disconnectAll(closeAllTabs)
+      setDatabases({})
+      setCollectionsMap({})
+      setExpandedConnections({})
+      setExpandedDatabases({})
+      setSelectedItem(null)
+      setFocusedNodeId(null)
+      setSelectedConnection(null)
+      setSelectedDatabase(null)
+      setSelectedCollection(null)
+      lastAccessedDbNodeRef.current = null
+    } finally {
+      setIsDisconnectingAll(false)
+    }
   }
 
   const handleDisconnectOthers = async (keepConnId: string): Promise<void> => {
@@ -1042,9 +1063,16 @@ export default function Sidebar({
           </button>
           {activeConnections.length > 0 && (
             <button
-              className="icon-btn p-1.5 hover:bg-surface-hover text-text-muted hover:text-text-light titlebar-no-drag"
+              type="button"
+              className={`icon-btn p-1.5 titlebar-no-drag ${
+                isDisconnectingAll
+                  ? 'text-text-dim opacity-50 cursor-not-allowed'
+                  : 'hover:bg-surface-hover text-text-muted hover:text-text-light'
+              }`}
               onClick={handleDisconnectAll}
               title={`Disconnect All (${activeConnections.length})`}
+              aria-label="Disconnect all connections"
+              disabled={isDisconnectingAll}
             >
               <DisconnectIcon className="w-4 h-4" />
             </button>
