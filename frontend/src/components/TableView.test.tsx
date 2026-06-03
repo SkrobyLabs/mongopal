@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, within } from '@testing-library/react'
+import { render, screen, fireEvent, within, waitFor } from '@testing-library/react'
 import TableView, { loadMaskedColumns, saveMaskedColumns, TableViewProps } from './TableView'
 import { MongoDocument } from '../utils/tableViewUtils'
 
@@ -361,6 +361,129 @@ describe('TableView Field Masking', () => {
       render(<TableView {...defaultProps} documents={[]} />)
 
       expect(screen.getByText('No documents to display')).toBeInTheDocument()
+    })
+  })
+
+  describe('document context menu positioning', () => {
+    const originalInnerWidth = window.innerWidth
+    const originalInnerHeight = window.innerHeight
+    const originalGetBoundingClientRect = HTMLElement.prototype.getBoundingClientRect
+
+    const setViewport = (width: number, height: number): void => {
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: width })
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: height })
+    }
+
+    const mockDocumentMenuSize = (
+      width: number,
+      height: number,
+      containerRect: Partial<DOMRect> = {}
+    ): void => {
+      vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement): DOMRect {
+        if (this.getAttribute('aria-label') === 'Document actions') {
+          return {
+            x: 0,
+            y: 0,
+            left: 0,
+            top: 0,
+            right: width,
+            bottom: height,
+            width,
+            height,
+            toJSON: () => ({}),
+          } as DOMRect
+        }
+
+        if (this.className === 'flex-1 overflow-auto') {
+          const left = containerRect.left ?? 0
+          const top = containerRect.top ?? 0
+          const rectWidth = containerRect.width ?? window.innerWidth
+          const rectHeight = containerRect.height ?? window.innerHeight
+          return {
+            x: left,
+            y: top,
+            left,
+            top,
+            right: containerRect.right ?? left + rectWidth,
+            bottom: containerRect.bottom ?? top + rectHeight,
+            width: rectWidth,
+            height: rectHeight,
+            toJSON: () => ({}),
+          } as DOMRect
+        }
+
+        return originalGetBoundingClientRect.call(this)
+      })
+    }
+
+    const openDocumentMenu = (clientX: number, clientY: number): HTMLElement => {
+      render(<TableView {...defaultProps} />)
+
+      fireEvent.contextMenu(screen.getByText('John Doe'), { clientX, clientY })
+
+      return screen.getByRole('menu', { name: 'Document actions' })
+    }
+
+    afterEach(() => {
+      vi.restoreAllMocks()
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalInnerWidth })
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: originalInnerHeight })
+    })
+
+    it('positions the document actions menu downward when it fits below the pointer', async () => {
+      setViewport(800, 600)
+      mockDocumentMenuSize(220, 160)
+
+      const menu = openDocumentMenu(100, 120)
+
+      await waitFor(() => {
+        expect(menu.style.left).toBe('100px')
+        expect(menu.style.top).toBe('120px')
+      })
+      expect(menu.style.maxHeight).toBe('')
+      expect(menu.style.overflowY).toBe('')
+    })
+
+    it('positions the document actions menu upward when it fits above the pointer', async () => {
+      setViewport(800, 600)
+      mockDocumentMenuSize(220, 160)
+
+      const menu = openDocumentMenu(100, 560)
+
+      await waitFor(() => {
+        expect(menu.style.left).toBe('100px')
+        expect(menu.style.top).toBe('400px')
+      })
+      expect(menu.style.maxHeight).toBe('')
+      expect(menu.style.overflowY).toBe('')
+    })
+
+    it('clamps and scrolls the document actions menu when neither direction fully fits', async () => {
+      setViewport(800, 400)
+      mockDocumentMenuSize(220, 520)
+
+      const menu = openDocumentMenu(100, 180)
+
+      await waitFor(() => {
+        expect(menu.style.left).toBe('100px')
+        expect(menu.style.top).toBe('8px')
+        expect(menu.style.maxHeight).toBe('384px')
+        expect(menu.style.overflowY).toBe('auto')
+      })
+    })
+
+    it('uses viewport space instead of constraining to a short table container', async () => {
+      setViewport(800, 600)
+      mockDocumentMenuSize(220, 160, { top: 0, bottom: 180, left: 0, right: 800, width: 800, height: 180 })
+
+      const menu = openDocumentMenu(100, 120)
+
+      await waitFor(() => {
+        expect(menu.style.left).toBe('100px')
+        expect(menu.style.top).toBe('120px')
+      })
+      expect(menu.style.maxHeight).toBe('')
+      expect(menu.style.overflowY).toBe('')
     })
   })
 

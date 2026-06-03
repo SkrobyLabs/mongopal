@@ -1,4 +1,5 @@
-import { useMemo, useState, useEffect, useRef, useCallback, MouseEvent as ReactMouseEvent } from 'react'
+import { useMemo, useState, useEffect, useLayoutEffect, useRef, useCallback, MouseEvent as ReactMouseEvent } from 'react'
+import { createPortal } from 'react-dom'
 import {
   getDocId,
   formatValue as formatValueUtil,
@@ -25,6 +26,15 @@ interface DocumentContextMenu {
   doc: MongoDocument
   cellKey: string | null
   cellValue: unknown
+}
+
+/**
+ * Viewport-aware render position for document context menu
+ */
+interface MenuPlacement {
+  left: number
+  top: number
+  maxHeight?: number
 }
 
 /**
@@ -117,6 +127,9 @@ const FROZEN_COLUMNS_KEY = 'mongopal-frozen-columns'
 
 // localStorage key for masked columns per collection
 const MASKED_COLUMNS_KEY = 'mongopal-masked-columns'
+
+// Viewport margin used when clamping fixed-position menus
+const MENU_VIEWPORT_MARGIN = 8
 
 
 // Masked value display constant
@@ -342,6 +355,7 @@ export default function TableView({
   const [expandedColumns, setExpandedColumns] = useState<Set<string>>(new Set())
   const rawColumns = useMemo(() => extractColumns(documents, expandedColumns), [documents, expandedColumns])
   const [contextMenu, setContextMenu] = useState<DocumentContextMenu | null>(null)
+  const [documentMenuPlacement, setDocumentMenuPlacement] = useState<MenuPlacement | null>(null)
   const [headerContextMenu, setHeaderContextMenu] = useState<HeaderContextMenu | null>(null)
   const [copiedField, setCopiedField] = useState<'value' | 'json' | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
@@ -684,6 +698,47 @@ export default function TableView({
     }
   }, [contextMenu])
 
+  useLayoutEffect(() => {
+    if (!contextMenu) {
+      setDocumentMenuPlacement(null)
+      return
+    }
+
+    const menu = menuRef.current
+    if (!menu) {
+      setDocumentMenuPlacement({ left: contextMenu.x, top: contextMenu.y })
+      return
+    }
+
+    const rect = menu.getBoundingClientRect()
+    const maxLeft = Math.max(MENU_VIEWPORT_MARGIN, window.innerWidth - rect.width - MENU_VIEWPORT_MARGIN)
+    const left = Math.min(Math.max(contextMenu.x, MENU_VIEWPORT_MARGIN), maxLeft)
+
+    let top = contextMenu.y
+    let maxHeight: number | undefined
+
+    if (contextMenu.y + rect.height + MENU_VIEWPORT_MARGIN <= window.innerHeight) {
+      top = contextMenu.y
+    } else if (contextMenu.y - rect.height >= MENU_VIEWPORT_MARGIN) {
+      top = contextMenu.y - rect.height
+    } else {
+      top = MENU_VIEWPORT_MARGIN
+      maxHeight = Math.max(0, window.innerHeight - MENU_VIEWPORT_MARGIN * 2)
+    }
+
+    setDocumentMenuPlacement(prev => {
+      if (
+        prev?.left === left &&
+        prev.top === top &&
+        prev.maxHeight === maxHeight
+      ) {
+        return prev
+      }
+
+      return { left, top, maxHeight }
+    })
+  }, [contextMenu, copiedField, readOnly, compareSourceDoc, onCompareSource, onCompareTo])
+
   // Close header context menu on click outside or scroll
   useEffect(() => {
     if (!headerContextMenu) return
@@ -724,6 +779,7 @@ export default function TableView({
   const handleContextMenu = (e: ReactMouseEvent<HTMLTableRowElement | HTMLTableCellElement>, doc: MongoDocument, cellKey: string | null = null, cellValue: unknown = null): void => {
     e.preventDefault()
     e.stopPropagation()
+    setDocumentMenuPlacement({ left: e.clientX, top: e.clientY })
     setContextMenu({
       x: e.clientX,
       y: e.clientY,
@@ -1049,15 +1105,17 @@ export default function TableView({
       </div>
 
       {/* Context Menu */}
-      {contextMenu && (
+      {contextMenu && createPortal(
         <div
           ref={menuRef}
           role="menu"
           aria-label="Document actions"
           className="fixed bg-surface border border-border rounded-lg shadow-xl py-1 z-50 min-w-[180px]"
           style={{
-            left: contextMenu.x,
-            top: contextMenu.y,
+            left: documentMenuPlacement?.left ?? contextMenu.x,
+            top: documentMenuPlacement?.top ?? contextMenu.y,
+            maxHeight: documentMenuPlacement?.maxHeight,
+            overflowY: documentMenuPlacement?.maxHeight ? 'auto' : undefined,
           }}
         >
           {/* Cell-specific copy option */}
@@ -1175,7 +1233,8 @@ export default function TableView({
             <TrashIcon className="w-4 h-4" />
             Delete Document
           </button>
-        </div>
+        </div>,
+        document.body
       )}
 
       {/* Header Context Menu (Column Freeze & Mask) */}
