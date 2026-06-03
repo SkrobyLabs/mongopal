@@ -22,6 +22,7 @@ describe('TabBar', () => {
   const mockPinTab = vi.fn()
   const mockRenameTab = vi.fn()
   const mockReorderTabs = vi.fn()
+  const mockConvertViewOnlyToEditable = vi.fn()
 
   const defaultMockContext: TabContextValue = {
     tabs: [],
@@ -40,6 +41,7 @@ describe('TabBar', () => {
     openSchemaTab: vi.fn(),
     openIndexTab: vi.fn(),
     convertInsertToDocumentTab: vi.fn(),
+    convertViewOnlyToEditable: mockConvertViewOnlyToEditable,
     setTabDirty: vi.fn(),
     markTabActivated: vi.fn(),
     updateTabDocument: vi.fn(),
@@ -110,6 +112,17 @@ describe('TabBar', () => {
       expect(screen.getByText('abc123...')).toBeInTheDocument()
     })
 
+    it('renders edit affordance for view-only document tabs', () => {
+      mockedUseTab.mockReturnValue({
+        ...defaultMockContext,
+        tabs: [createTab({ id: 'view-tab', type: 'document', label: 'abc123...', viewOnly: true })],
+        activeTab: 'view-tab',
+      })
+
+      render(<TabBar />)
+      expect(screen.getByLabelText('Make abc123... editable')).toBeInTheDocument()
+    })
+
     it('renders insert tabs with plus icon label', () => {
       mockedUseTab.mockReturnValue({
         ...defaultMockContext,
@@ -176,6 +189,22 @@ describe('TabBar', () => {
       render(<TabBar />)
       const tab = screen.getByText('users').closest('.tab')
       expect(tab).toHaveClass('active')
+    })
+  })
+
+  describe('view-only conversion', () => {
+    it('converts a view-only document tab without activating it as a side effect', () => {
+      mockedUseTab.mockReturnValue({
+        ...defaultMockContext,
+        tabs: [createTab({ id: 'view-tab', type: 'document', label: 'abc123...', viewOnly: true })],
+        activeTab: 'other-tab',
+      })
+
+      render(<TabBar />)
+      fireEvent.click(screen.getByLabelText('Make abc123... editable'))
+
+      expect(mockConvertViewOnlyToEditable).toHaveBeenCalledWith('view-tab')
+      expect(mockSetActiveTab).not.toHaveBeenCalled()
     })
   })
 

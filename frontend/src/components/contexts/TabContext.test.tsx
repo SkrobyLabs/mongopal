@@ -414,6 +414,43 @@ describe('TabContext', () => {
     })
   })
 
+  describe('convertViewOnlyToEditable', () => {
+    it('converts a view-only document tab to editable without changing tab identity or content', () => {
+      let ctx: TabContextValue
+
+      render(
+        <AllProviders>
+          <TestConsumer onMount={(c) => { ctx = c }} />
+        </AllProviders>
+      )
+
+      const doc = { _id: '12345678abcd', name: 'Test' }
+      act(() => {
+        ctx!.openViewDocumentTab('conn-1', 'testdb', 'users', doc, '12345678abcd')
+      })
+
+      const tabBefore = ctx!.tabs[0]
+      expect(tabBefore.viewOnly).toBe(true)
+
+      act(() => {
+        ctx!.convertViewOnlyToEditable(tabBefore.id)
+      })
+
+      expect(ctx!.tabs[0]).toMatchObject({
+        id: tabBefore.id,
+        type: 'document',
+        connectionId: 'conn-1',
+        database: 'testdb',
+        collection: 'users',
+        document: doc,
+        documentId: '12345678abcd',
+        label: '12345678...',
+      })
+      expect(ctx!.tabs[0].viewOnly).toBe(false)
+      expect(ctx!.activeTab).toBe(tabBefore.id)
+    })
+  })
+
   describe('bulk close operations', () => {
     it('closeTabsForConnection closes all tabs for a connection', () => {
       let ctx: TabContextValue

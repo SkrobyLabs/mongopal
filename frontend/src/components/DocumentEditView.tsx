@@ -284,6 +284,12 @@ const PlusIcon = ({ className = "w-4 h-4" }: IconProps): ReactElement => (
   </svg>
 )
 
+const EditIcon = ({ className = "w-4 h-4" }: IconProps): ReactElement => (
+  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+  </svg>
+)
+
 // =============================================================================
 // Main Component
 // =============================================================================
@@ -302,7 +308,7 @@ export default function DocumentEditView({
 }: DocumentEditViewProps): ReactElement {
   const { notify } = useNotification()
   const { activeConnections, connectingIds, connect } = useConnection()
-  const { setTabDirty, updateTabDocument, tabs } = useTab()
+  const { setTabDirty, updateTabDocument, convertViewOnlyToEditable, tabs } = useTab()
   const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null)
   const monacoRef = useRef<typeof Monaco | null>(null)
   const historyDropdownRef = useRef<HTMLDivElement>(null)
@@ -705,6 +711,16 @@ export default function DocumentEditView({
           )}
           {isViewMode && (
             <span className="text-info text-xs flex-shrink-0">(view only)</span>
+          )}
+          {isViewMode && tabId && !readOnly && (
+            <button
+              className="btn btn-ghost p-1"
+              onClick={() => convertViewOnlyToEditable(tabId)}
+              title="Make editable"
+              aria-label="Make editable"
+            >
+              <EditIcon className="w-3.5 h-3.5" />
+            </button>
           )}
         </div>
         <div className="flex items-center gap-1">

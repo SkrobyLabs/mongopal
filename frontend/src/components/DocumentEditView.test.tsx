@@ -97,6 +97,7 @@ const mockGo: MockGoApp = {
   UpdateDocument: vi.fn(),
   InsertDocument: vi.fn(),
 }
+const mockConvertViewOnlyToEditable = vi.fn()
 
 beforeEach(() => {
   // Use type assertion to bypass the stricter GoAppBindings type from ConnectionContext
@@ -159,6 +160,7 @@ vi.mock('./contexts/TabContext', async () => {
       setTabDirty: vi.fn(),
       markTabActivated: vi.fn(),
       updateTabDocument: vi.fn(),
+      convertViewOnlyToEditable: mockConvertViewOnlyToEditable,
     }),
   }
 })
@@ -320,6 +322,40 @@ describe('DocumentEditView', () => {
       )
 
       expect(screen.getByText('Read-only')).toBeInTheDocument()
+    })
+
+    it('shows view-only label and make editable control in view mode', () => {
+      render(
+        <AllProviders>
+          <DocumentEditView {...defaultProps} mode="view" />
+        </AllProviders>
+      )
+
+      expect(screen.getByText('(view only)')).toBeInTheDocument()
+      expect(screen.getByLabelText('Make editable')).toBeInTheDocument()
+    })
+
+    it('converts the current view-only tab to editable from the header control', () => {
+      render(
+        <AllProviders>
+          <DocumentEditView {...defaultProps} mode="view" />
+        </AllProviders>
+      )
+
+      fireEvent.click(screen.getByLabelText('Make editable'))
+
+      expect(mockConvertViewOnlyToEditable).toHaveBeenCalledWith('test-tab')
+    })
+
+    it('hides make editable control for read-only connections', () => {
+      render(
+        <AllProviders>
+          <DocumentEditView {...defaultProps} mode="view" readOnly={true} />
+        </AllProviders>
+      )
+
+      expect(screen.getByText('(view only)')).toBeInTheDocument()
+      expect(screen.queryByLabelText('Make editable')).not.toBeInTheDocument()
     })
   })
 

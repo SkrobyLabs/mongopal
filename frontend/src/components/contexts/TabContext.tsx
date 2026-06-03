@@ -88,6 +88,7 @@ export interface TabContextValue {
   renameTab: (tabId: string, newLabel: string) => void
   reorderTabs: (draggedId: string, targetId: string) => void
   convertInsertToDocumentTab: (tabId: string, document: unknown, documentId: string) => void
+  convertViewOnlyToEditable: (tabId: string) => void
   setTabDirty: (tabId: string, isDirty: boolean) => void
   markTabActivated: (tabId: string) => void
   updateTabDocument: (tabId: string, document: unknown) => void
@@ -450,6 +451,14 @@ export function TabProvider({ children }: TabProviderProps): React.JSX.Element {
     setActiveTab(newTabId)
   }, [tabs])
 
+  const convertViewOnlyToEditable = useCallback((tabId: string): void => {
+    setTabs(prev => prev.map(t =>
+      t.id === tabId && t.type === 'document' && t.viewOnly
+        ? { ...t, viewOnly: false, restored: false }
+        : t
+    ))
+  }, [])
+
   const closeTab = useCallback((tabId: string): void => {
     setTabs(prev => {
       const filtered = prev.filter(t => t.id !== tabId)
@@ -628,6 +637,7 @@ export function TabProvider({ children }: TabProviderProps): React.JSX.Element {
     renameTab,
     reorderTabs,
     convertInsertToDocumentTab,
+    convertViewOnlyToEditable,
     setTabDirty,
     markTabActivated,
     updateTabDocument,
@@ -652,7 +662,7 @@ export function TabProvider({ children }: TabProviderProps): React.JSX.Element {
   }), [
     tabs, activeTab, currentTab,
     openTab, openNewQueryTab, openDocumentTab, openViewDocumentTab, openInsertTab, openSchemaTab, openIndexTab,
-    closeTab, pinTab, renameTab, reorderTabs, convertInsertToDocumentTab,
+    closeTab, pinTab, renameTab, reorderTabs, convertInsertToDocumentTab, convertViewOnlyToEditable,
     setTabDirty, markTabActivated, updateTabDocument,
     closeTabsForConnection, closeTabsForDatabase, closeTabsForCollection,
     closeAllTabs, keepOnlyConnectionTabs,

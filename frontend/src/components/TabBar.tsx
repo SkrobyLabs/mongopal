@@ -60,6 +60,12 @@ const EyeIcon: React.FC<IconProps> = ({ className = "w-4 h-4" }) => (
   </svg>
 )
 
+const EditIcon: React.FC<IconProps> = ({ className = "w-4 h-4" }) => (
+  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+  </svg>
+)
+
 const IndexIcon: React.FC<IconProps> = ({ className = "w-4 h-4" }) => (
   <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 10h16M4 14h16M4 18h16" />
@@ -92,6 +98,7 @@ export default function TabBar(): React.JSX.Element {
     pinTab,
     renameTab,
     reorderTabs,
+    convertViewOnlyToEditable,
   } = useTab()
 
   const [draggedTab, setDraggedTab] = useState<Tab | null>(null)
@@ -304,6 +311,20 @@ export default function TabBar(): React.JSX.Element {
               className="w-2 h-2 rounded-full bg-amber-400 flex-shrink-0"
               title="Unsaved changes"
             />
+          )}
+
+          {tab.type === 'document' && tab.viewOnly && editingTabId !== tab.id && (
+            <button
+              className="icon-btn p-0.5 hover:bg-surface-active rounded text-info flex-shrink-0"
+              onClick={(e) => {
+                e.stopPropagation()
+                convertViewOnlyToEditable(tab.id)
+              }}
+              title="Make editable"
+              aria-label={`Make ${tab.label} editable`}
+            >
+              <EditIcon className="w-3 h-3" />
+            </button>
           )}
 
           {/* Close button - always visible on active tab, hover on others, hidden for pinned */}
