@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseFilterFromQuery, parseProjectionFromQuery, buildFullQuery, isSimpleFindQuery, wrapScriptForOutput, shellToJson } from './queryParser'
+import { parseFilterFromQuery, parseProjectionFromQuery, buildFullQuery, isSimpleFindQuery, wrapScriptForOutput, shellToJson, convertMongoshConstructors, convertRegexLiterals } from './queryParser'
 
 describe('shellToJson', () => {
   it('converts unquoted keys to quoted keys', () => {
@@ -40,6 +40,107 @@ describe('shellToJson', () => {
 
   it('handles keys with numbers', () => {
     expect(shellToJson('{field1: "value"}')).toBe('{"field1": "value"}')
+  })
+
+  it('converts regex literal to $regex', () => {
+    expect(shellToJson('{name: /test/}')).toBe('{"name": {"$regex": "test"}}')
+  })
+
+  it('converts regex literal with flags', () => {
+    expect(shellToJson('{name: /manytopic/i}')).toBe('{"name": {"$regex": "manytopic", "$options": "i"}}')
+  })
+
+  it('converts regex with special chars', () => {
+    expect(shellToJson('{name: /^foo.*bar$/}')).toBe('{"name": {"$regex": "^foo.*bar$"}}')
+  })
+
+  it('converts regex with backslash escapes', () => {
+    expect(shellToJson('{code: /\\d+/}')).toBe('{"code": {"$regex": "\\\\d+"}}')
+  })
+
+  it('converts multiple regex literals', () => {
+    expect(shellToJson('{$and: [{a: /x/}, {b: /y/i}]}')).toBe(
+      '{"$and": [{"a": {"$regex": "x"}}, {"b": {"$regex": "y", "$options": "i"}}]}'
+    )
+  })
+
+  it('converts regex in $not', () => {
+    expect(shellToJson('{name: {$not: /test/}}')).toBe('{"name": {"$not": {"$regex": "test"}}}')
+  })
+
+  it('converts regex in array values', () => {
+    expect(shellToJson('{$in: [/foo/, /bar/]}')).toBe('{"$in": [{"$regex": "foo"}, {"$regex": "bar"}]}')
+  })
+
+  it('does not convert slash inside strings', () => {
+    expect(shellToJson('{path: "/foo/bar"}')).toBe('{"path": "/foo/bar"}')
+  })
+
+  it('handles regex with already-quoted keys', () => {
+    expect(shellToJson('{"EnvironmentName": /manytopic/}')).toBe('{"EnvironmentName": {"$regex": "manytopic"}}')
+  })
+
+  // Mongosh constructor conversions
+  it('converts ObjectId() to $oid', () => {
+    expect(shellToJson('{_id: ObjectId("507f1f77bcf86cd799439011")}')).toBe('{"_id": {"$oid": "507f1f77bcf86cd799439011"}}')
+  })
+
+  it('converts ISODate() to $date', () => {
+    expect(shellToJson('{created: ISODate("2023-01-01T00:00:00Z")}')).toBe('{"created": {"$date": "2023-01-01T00:00:00Z"}}')
+  })
+
+  it('converts new Date() to $date', () => {
+    expect(shellToJson('{created: new Date("2023-06-15")}')).toBe('{"created": {"$date": "2023-06-15"}}')
+  })
+
+  it('converts NumberInt() to $numberInt', () => {
+    expect(shellToJson('{count: NumberInt(42)}')).toBe('{"count": {"$numberInt": "42"}}')
+  })
+
+  it('converts NumberLong() to $numberLong', () => {
+    expect(shellToJson('{big: NumberLong(9999999999)}')).toBe('{"big": {"$numberLong": "9999999999"}}')
+  })
+
+  it('converts NumberDecimal() to $numberDecimal', () => {
+    expect(shellToJson('{price: NumberDecimal("1.5")}')).toBe('{"price": {"$numberDecimal": "1.5"}}')
+  })
+
+  it('converts UUID() to $uuid', () => {
+    expect(shellToJson('{ref: UUID("abc-def-123")}')).toBe('{"ref": {"$uuid": "abc-def-123"}}')
+  })
+
+  it('converts Timestamp() to $timestamp', () => {
+    expect(shellToJson('{ts: Timestamp(1234, 1)}')).toBe('{"ts": {"$timestamp": {"t": 1234, "i": 1}}}')
+  })
+
+  it('does not convert constructors inside strings', () => {
+    expect(shellToJson('{name: "ObjectId(abc)"}')).toBe('{"name": "ObjectId(abc)"}')
+  })
+
+  it('converts multiple constructors in one query', () => {
+    const input = '{_id: ObjectId("abc"), created: ISODate("2023-01-01")}'
+    const result = shellToJson(input)
+    expect(result).toBe('{"_id": {"$oid": "abc"}, "created": {"$date": "2023-01-01"}}')
+  })
+
+  it('converts ObjectId with single quotes', () => {
+    expect(shellToJson("{_id: ObjectId('abc123')}")).toBe('{"_id": {"$oid": "abc123"}}')
+  })
+})
+
+describe('convertMongoshConstructors', () => {
+  it('is exported for reuse', () => {
+    expect(typeof convertMongoshConstructors).toBe('function')
+  })
+
+  it('passes through plain JSON', () => {
+    expect(convertMongoshConstructors('{"a": 1}')).toBe('{"a": 1}')
+  })
+})
+
+describe('convertRegexLiterals', () => {
+  it('is exported for reuse', () => {
+    expect(typeof convertRegexLiterals).toBe('function')
   })
 })
 

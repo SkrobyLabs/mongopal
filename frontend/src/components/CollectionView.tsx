@@ -565,7 +565,7 @@ export default function CollectionView({
       monaco.languages.setMonarchTokensProvider('mongoquery', {
         defaultToken: '',
         tokenPostfix: '.mongoquery',
-        keywords: ['db', 'true', 'false', 'null'],
+        keywords: ['db', 'true', 'false', 'null', 'new', 'Date', 'ObjectId', 'ISODate', 'NumberInt', 'NumberLong', 'NumberDecimal', 'UUID', 'Timestamp'],
         operators: [
           '=',
           '>',
@@ -589,7 +589,7 @@ export default function CollectionView({
           '^',
           '%',
         ],
-        symbols: /[=><!~?:&|+\-*/^%]+/,
+        symbols: /[=><!~?&|+\-*^%]+/,
         escapes: /\\(?:[abfnrtv\\"']|x[0-9A-Fa-f]{1,4}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8})/,
         tokenizer: {
           root: [
@@ -605,7 +605,10 @@ export default function CollectionView({
             ],
             { include: '@whitespace' },
             [/[{}()[\]]/, '@brackets'],
+            [/:/, 'delimiter'],
             [/[<>](?!@symbols)/, '@brackets'],
+            // Regex literal: / not followed by / or * (those are comments)
+            [/\/(?![/*])/, { token: 'regexp.slash', bracket: '@open', next: '@regexp' }],
             [
               /@symbols/,
               {
@@ -635,6 +638,11 @@ export default function CollectionView({
             [/@escapes/, 'string.escape'],
             [/\\./, 'string.escape.invalid'],
             [/'/, { token: 'string.quote', bracket: '@close', next: '@pop' }],
+          ],
+          regexp: [
+            [/[^/\\]+/, 'regexp'],
+            [/\\./, 'regexp.escape'],
+            [/\/[gimsuy]*/, { token: 'regexp.slash', bracket: '@close', next: '@pop' }],
           ],
           whitespace: [
             [/[ \t\r\n]+/, 'white'],

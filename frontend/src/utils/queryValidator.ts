@@ -11,6 +11,8 @@
  * - 2: Info (blue) - Suggestions
  */
 
+import { shellToJson } from './queryParser'
+
 /**
  * Severity levels for diagnostics
  */
@@ -191,35 +193,9 @@ function findPosition(text: string, index: number): TextPosition {
 }
 
 /**
- * Try to convert MongoDB shell-style JSON to valid JSON.
- * Handles unquoted keys like { name: "test" } -> { "name": "test" }
- */
-function relaxedJsonToStrict(text: string): string {
-  // Skip if it's already valid JSON
-  try {
-    JSON.parse(text)
-    return text
-  } catch {
-    // Continue to conversion
-  }
-
-  // Convert unquoted keys to quoted keys
-  // This regex matches: { key: or , key: where key is unquoted
-  // But skip if key starts with $ (already handled by MongoDB syntax)
-  let result = text
-
-  // Handle unquoted keys (but preserve quoted ones and $ operators)
-  // Match: start of object/after comma, optional whitespace, unquoted identifier, colon
-  result = result.replace(/([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)(\s*:)/g, (_match, prefix: string, key: string, suffix: string) => {
-    // Don't quote if it's already a valid JSON-like pattern or if it starts with $
-    return `${prefix}"${key}"${suffix}`
-  })
-
-  return result
-}
-
-/**
  * Parse JSON with detailed error information.
+ * Uses shellToJson to handle mongosh syntax (ObjectId(), ISODate(), regex, etc.)
+ * before attempting JSON.parse.
  * Returns { success: boolean, error?: { message, index } }
  */
 function parseJsonWithDetails(text: string): ParseJsonResult {
@@ -231,10 +207,10 @@ function parseJsonWithDetails(text: string): ParseJsonResult {
     // Try converting MongoDB shell style to strict JSON
   }
 
-  // Try to convert and parse relaxed JSON (MongoDB shell style with unquoted keys)
+  // Convert mongosh syntax (constructors, regex, unquoted keys, single quotes) then parse
   try {
-    const strictJson = relaxedJsonToStrict(text)
-    JSON.parse(strictJson)
+    const converted = shellToJson(text)
+    JSON.parse(converted)
     return { success: true }
   } catch (e) {
     // Extract position from error message if available
@@ -443,34 +419,6 @@ function checkCommonMistakes(text: string): QueryDiagnostic[] {
       startCol: pos.column,
       endLine: endPos.line,
       endCol: endPos.column + 1,
-    })
-  }
-
-  // Check for ObjectId without proper wrapper
-  const bareObjectIdRegex = /:\s*ObjectId\s*\(/gi
-  while ((match = bareObjectIdRegex.exec(text)) !== null) {
-    const pos = findPosition(text, match.index + match[0].indexOf('ObjectId'))
-    diagnostics.push({
-      message: 'ObjectId() syntax requires mongosh. For JSON queries, use { "$oid": "..." }',
-      severity: 2, // Info
-      startLine: pos.line,
-      startCol: pos.column,
-      endLine: pos.line,
-      endCol: pos.column + 8,
-    })
-  }
-
-  // Check for ISODate without proper wrapper
-  const bareISODateRegex = /:\s*ISODate\s*\(/gi
-  while ((match = bareISODateRegex.exec(text)) !== null) {
-    const pos = findPosition(text, match.index + match[0].indexOf('ISODate'))
-    diagnostics.push({
-      message: 'ISODate() syntax requires mongosh. For JSON queries, use { "$date": "..." }',
-      severity: 2, // Info
-      startLine: pos.line,
-      startCol: pos.column,
-      endLine: pos.line,
-      endCol: pos.column + 7,
     })
   }
 

@@ -24,9 +24,221 @@ interface LastStatementResult {
 }
 
 /**
+ * Read a regex literal starting at the opening /. Returns pattern, flags,
+ * and the index of the last consumed character, or null if not a valid regex.
+ */
+function readRegexLiteral(input: string, startIndex: number): { pattern: string; flags: string; endIndex: number } | null {
+  let i = startIndex + 1
+  let pattern = ''
+
+  while (i < input.length) {
+    const char = input[i]
+    if (char === '\\' && i + 1 < input.length) {
+      pattern += char + input[i + 1]
+      i += 2
+      continue
+    }
+    if (char === '/') break
+    if (char === '\n') return null
+    pattern += char
+    i++
+  }
+
+  if (i >= input.length || pattern === '') return null
+
+  let flags = ''
+  i++ // skip closing /
+  while (i < input.length && /[gimsuy]/.test(input[i])) {
+    flags += input[i]
+    i++
+  }
+
+  return { pattern, flags, endIndex: i - 1 }
+}
+
+/**
+ * Convert mongosh constructor calls to Extended JSON equivalents.
+ * Handles: ObjectId(), ISODate(), new Date(), NumberInt(), NumberLong(),
+ * NumberDecimal(), UUID(), Timestamp().
+ * Only converts outside of quoted strings.
+ */
+export function convertMongoshConstructors(input: string): string {
+  let result = ''
+  let inString = false
+  let stringChar: string | null = null
+
+  for (let i = 0; i < input.length; i++) {
+    const char = input[i]
+    const prevChar = i > 0 ? input[i - 1] : ''
+
+    // Track string state
+    if ((char === '"' || char === "'") && prevChar !== '\\') {
+      if (!inString) {
+        inString = true
+        stringChar = char
+      } else if (char === stringChar) {
+        inString = false
+        stringChar = null
+      }
+      result += char
+      continue
+    }
+
+    if (inString) {
+      result += char
+      continue
+    }
+
+    // Try to match "new Date(" at current position
+    if (char === 'n' && input.slice(i, i + 4) === 'new ') {
+      const afterNew = input.slice(i + 4).match(/^Date\s*\(/)
+      if (afterNew) {
+        const parenStart = i + 4 + afterNew[0].length
+        const arg = extractParenArg(input, parenStart - 1)
+        if (arg !== null) {
+          const val = arg.value.replace(/^["']|["']$/g, '')
+          result += '{"$date": "' + val + '"}'
+          i = arg.endIndex
+          continue
+        }
+      }
+    }
+
+    // Try to match constructor patterns: Name(...)
+    const constructorMatch = input.slice(i).match(/^(ObjectId|ISODate|NumberInt|NumberLong|NumberDecimal|UUID|Timestamp)\s*\(/)
+    if (constructorMatch) {
+      const name = constructorMatch[1]
+      const parenStart = i + constructorMatch[0].length - 1
+      const arg = extractParenArg(input, parenStart)
+      if (arg !== null) {
+        const replacement = mongoshToExtendedJson(name, arg.value)
+        if (replacement !== null) {
+          result += replacement
+          i = arg.endIndex
+          continue
+        }
+      }
+    }
+
+    result += char
+  }
+
+  return result
+}
+
+/**
+ * Extract the content inside parentheses starting at parenIndex (the '(' character).
+ * Returns the raw content string and the index of the closing ')'.
+ */
+function extractParenArg(input: string, parenIndex: number): { value: string; endIndex: number } | null {
+  if (input[parenIndex] !== '(') return null
+  let depth = 1
+  let i = parenIndex + 1
+  while (i < input.length && depth > 0) {
+    if (input[i] === '(') depth++
+    else if (input[i] === ')') depth--
+    i++
+  }
+  if (depth !== 0) return null
+  const value = input.slice(parenIndex + 1, i - 1).trim()
+  return { value, endIndex: i - 1 }
+}
+
+/**
+ * Convert a mongosh constructor name and its argument to Extended JSON.
+ */
+function mongoshToExtendedJson(name: string, rawArg: string): string | null {
+  // Strip quotes from string arguments
+  const arg = rawArg.replace(/^["']|["']$/g, '')
+
+  switch (name) {
+    case 'ObjectId':
+      return '{"$oid": "' + arg + '"}'
+    case 'ISODate':
+      return '{"$date": "' + arg + '"}'
+    case 'NumberInt':
+      return '{"$numberInt": "' + arg + '"}'
+    case 'NumberLong':
+      return '{"$numberLong": "' + arg + '"}'
+    case 'NumberDecimal':
+      return '{"$numberDecimal": "' + arg + '"}'
+    case 'UUID':
+      return '{"$uuid": "' + arg + '"}'
+    case 'Timestamp': {
+      // Timestamp(t, i) — two numeric arguments
+      const parts = rawArg.split(',').map(s => s.trim())
+      if (parts.length === 2) {
+        return '{"$timestamp": {"t": ' + parts[0] + ', "i": ' + parts[1] + '}}'
+      }
+      return null
+    }
+    default:
+      return null
+  }
+}
+
+/**
+ * Convert JS regex literals to $regex objects in a shell query string.
+ * /pattern/ → {"$regex": "pattern"}
+ * /pattern/i → {"$regex": "pattern", "$options": "i"}
+ * Only converts in value positions (after : , [ () to avoid false positives.
+ */
+export function convertRegexLiterals(input: string): string {
+  let result = ''
+  let inString = false
+  let stringChar: string | null = null
+
+  for (let i = 0; i < input.length; i++) {
+    const char = input[i]
+    const prevChar = i > 0 ? input[i - 1] : ''
+
+    if ((char === '"' || char === "'") && prevChar !== '\\') {
+      if (!inString) {
+        inString = true
+        stringChar = char
+      } else if (char === stringChar) {
+        inString = false
+        stringChar = null
+      }
+      result += char
+      continue
+    }
+
+    if (inString) {
+      result += char
+      continue
+    }
+
+    if (char === '/') {
+      const trimmed = result.replace(/\s+$/, '')
+      const lastChar = trimmed[trimmed.length - 1]
+      if (lastChar === ':' || lastChar === ',' || lastChar === '[' || lastChar === '(') {
+        const regex = readRegexLiteral(input, i)
+        if (regex) {
+          const escaped = regex.pattern.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+          let replacement = '{"$regex": "' + escaped + '"'
+          if (regex.flags) {
+            replacement += ', "$options": "' + regex.flags + '"'
+          }
+          replacement += '}'
+          result += replacement
+          i = regex.endIndex
+          continue
+        }
+      }
+    }
+
+    result += char
+  }
+
+  return result
+}
+
+/**
  * Convert MongoDB shell syntax to valid JSON.
- * Handles unquoted keys like {_id: "value"} -> {"_id": "value"}
- * and single-quoted strings like {'key': 'value'} -> {"key": "value"}
+ * Handles unquoted keys like {_id: "value"} -> {"_id": "value"},
+ * single-quoted strings like {'key': 'value'} -> {"key": "value"},
+ * and regex literals like /pattern/i -> {"$regex": "pattern", "$options": "i"}
  */
 export function shellToJson(shellSyntax: string | null | undefined): string {
   if (!shellSyntax || shellSyntax === '{}') return shellSyntax || ''
@@ -39,7 +251,8 @@ export function shellToJson(shellSyntax: string | null | undefined): string {
     // Not valid JSON, needs conversion
   }
 
-  const result = shellSyntax
+  // Convert mongosh constructors and regex literals before other shell syntax conversions
+  const result = convertRegexLiterals(convertMongoshConstructors(shellSyntax))
   let inString = false
   let stringChar: string | null = null
   let output = ''

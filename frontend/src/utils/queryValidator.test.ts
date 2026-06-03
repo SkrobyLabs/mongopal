@@ -124,18 +124,36 @@ describe('validateQuery', () => {
       )).toBe(true)
     })
 
-    it('provides info about ObjectId syntax', () => {
-      const result = validateQuery('{ "_id": ObjectId("123") }')
-      expect(result.some((d: QueryDiagnostic) =>
-        d.severity === 2 && d.message.includes('ObjectId()')
-      )).toBe(true)
+    it('does not flag ObjectId() as error (auto-converted)', () => {
+      const result = validateQuery('{ "_id": ObjectId("507f1f77bcf86cd799439011") }')
+      expect(result.filter((d: QueryDiagnostic) => d.severity === 8)).toEqual([])
+      expect(result.filter((d: QueryDiagnostic) => d.severity === 2 && d.message.includes('ObjectId'))).toEqual([])
     })
 
-    it('provides info about ISODate syntax', () => {
+    it('does not flag ISODate() as error (auto-converted)', () => {
       const result = validateQuery('{ "date": ISODate("2023-01-01") }')
-      expect(result.some((d: QueryDiagnostic) =>
-        d.severity === 2 && d.message.includes('ISODate()')
-      )).toBe(true)
+      expect(result.filter((d: QueryDiagnostic) => d.severity === 8)).toEqual([])
+      expect(result.filter((d: QueryDiagnostic) => d.severity === 2 && d.message.includes('ISODate'))).toEqual([])
+    })
+
+    it('does not flag regex literals as error (auto-converted)', () => {
+      const result = validateQuery('{ "name": /test/i }')
+      expect(result.filter((d: QueryDiagnostic) => d.severity === 8)).toEqual([])
+    })
+
+    it('does not flag NumberInt() as error (auto-converted)', () => {
+      const result = validateQuery('{ "count": NumberInt(42) }')
+      expect(result.filter((d: QueryDiagnostic) => d.severity === 8)).toEqual([])
+    })
+
+    it('does not flag NumberLong() as error (auto-converted)', () => {
+      const result = validateQuery('{ "big": NumberLong(9999999999) }')
+      expect(result.filter((d: QueryDiagnostic) => d.severity === 8)).toEqual([])
+    })
+
+    it('does not flag new Date() as error (auto-converted)', () => {
+      const result = validateQuery('{ "created": new Date("2023-06-15") }')
+      expect(result.filter((d: QueryDiagnostic) => d.severity === 8)).toEqual([])
     })
   })
 

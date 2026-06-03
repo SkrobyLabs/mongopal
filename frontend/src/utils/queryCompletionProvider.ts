@@ -38,6 +38,12 @@ export interface CompletionItemOption {
   insertText: string
   insertTextRules?: number
   sortText?: string
+  range?: {
+    startLineNumber: number
+    startColumn: number
+    endLineNumber: number
+    endColumn: number
+  }
 }
 
 export interface CompletionProviderDeps {
@@ -107,6 +113,17 @@ const EXTENDED_JSON_OPERATORS: OperatorInfo[] = [
   { label: '$numberLong', detail: 'Int64', documentation: 'Extended JSON 64-bit integer.\n\n`{ bigCount: { "$numberLong": "9223372036854775807" } }`', insertText: '"$numberLong": "${1:0}"', isSnippet: true },
   { label: '$numberDouble', detail: 'Double', documentation: 'Extended JSON double.\n\n`{ price: { "$numberDouble": "9.99" } }`', insertText: '"$numberDouble": "${1:0.0}"', isSnippet: true },
   { label: '$numberDecimal', detail: 'Decimal128', documentation: 'Extended JSON 128-bit decimal.\n\n`{ price: { "$numberDecimal": "9.99" } }`', insertText: '"$numberDecimal": "${1:0.0}"', isSnippet: true },
+]
+
+const MONGOSH_CONSTRUCTORS: OperatorInfo[] = [
+  { label: 'ObjectId()', detail: 'mongosh ObjectId', documentation: 'ObjectId constructor (auto-converted to Extended JSON).\n\n`{ _id: ObjectId("507f1f77bcf86cd799439011") }`', insertText: 'ObjectId("${1}")', isSnippet: true },
+  { label: 'ISODate()', detail: 'mongosh ISODate', documentation: 'ISODate constructor (auto-converted to Extended JSON).\n\n`{ created: ISODate("2024-01-01T00:00:00Z") }`', insertText: 'ISODate("${1:2024-01-01T00:00:00Z}")', isSnippet: true },
+  { label: 'new Date()', detail: 'mongosh Date', documentation: 'Date constructor (auto-converted to Extended JSON).\n\n`{ created: new Date("2024-01-01") }`', insertText: 'new Date("${1:2024-01-01T00:00:00Z}")', isSnippet: true },
+  { label: 'NumberInt()', detail: 'mongosh Int32', documentation: 'NumberInt constructor (auto-converted to Extended JSON).\n\n`{ count: NumberInt(42) }`', insertText: 'NumberInt(${1:0})', isSnippet: true },
+  { label: 'NumberLong()', detail: 'mongosh Int64', documentation: 'NumberLong constructor (auto-converted to Extended JSON).\n\n`{ big: NumberLong(9999999999) }`', insertText: 'NumberLong(${1:0})', isSnippet: true },
+  { label: 'NumberDecimal()', detail: 'mongosh Decimal128', documentation: 'NumberDecimal constructor (auto-converted to Extended JSON).\n\n`{ price: NumberDecimal("9.99") }`', insertText: 'NumberDecimal("${1:0.0}")', isSnippet: true },
+  { label: 'UUID()', detail: 'mongosh UUID', documentation: 'UUID constructor (auto-converted to Extended JSON).\n\n`{ ref: UUID("abc-def-123") }`', insertText: 'UUID("${1}")', isSnippet: true },
+  { label: 'Timestamp()', detail: 'mongosh Timestamp', documentation: 'Timestamp constructor (auto-converted to Extended JSON).\n\n`{ ts: Timestamp(1234, 1) }`', insertText: 'Timestamp(${1:0}, ${2:1})', isSnippet: true },
 ]
 
 const QUERY_OPERATORS = [
@@ -412,7 +429,7 @@ export function buildFieldItems(
  * Build operator completion items for a given category.
  */
 export function buildOperatorItems(
-  category: 'query' | 'logical' | 'extended-json',
+  category: 'query' | 'logical' | 'extended-json' | 'mongosh',
   prefix: string,
 ): CompletionItemOption[] {
   let operators: OperatorInfo[]
@@ -426,6 +443,9 @@ export function buildOperatorItems(
       break
     case 'extended-json':
       operators = EXTENDED_JSON_OPERATORS
+      break
+    case 'mongosh':
+      operators = MONGOSH_CONSTRUCTORS
       break
   }
 
@@ -470,25 +490,45 @@ export function buildValueItems(
   }
 
   if (type === 'objectid' || type === 'objectId') {
-    items.push({
-      label: 'ObjectId',
-      kind: CompletionKind.Snippet,
-      detail: 'ObjectId wrapper',
-      insertText: '{ "$$oid": "${1}" }',
-      insertTextRules: InsertTextRules.InsertAsSnippet,
-      sortText: '0000',
-    })
+    items.push(
+      {
+        label: 'ObjectId()',
+        kind: CompletionKind.Snippet,
+        detail: 'mongosh ObjectId',
+        insertText: 'ObjectId("${1}")',
+        insertTextRules: InsertTextRules.InsertAsSnippet,
+        sortText: '0000',
+      },
+      {
+        label: 'ObjectId (Extended JSON)',
+        kind: CompletionKind.Snippet,
+        detail: 'Extended JSON ObjectId',
+        insertText: '{ "$$oid": "${1}" }',
+        insertTextRules: InsertTextRules.InsertAsSnippet,
+        sortText: '0001',
+      },
+    )
   }
 
   if (type === 'date') {
-    items.push({
-      label: 'Date',
-      kind: CompletionKind.Snippet,
-      detail: 'Date wrapper',
-      insertText: '{ "$$date": "${1:2024-01-01T00:00:00Z}" }',
-      insertTextRules: InsertTextRules.InsertAsSnippet,
-      sortText: '0000',
-    })
+    items.push(
+      {
+        label: 'ISODate()',
+        kind: CompletionKind.Snippet,
+        detail: 'mongosh ISODate',
+        insertText: 'ISODate("${1:2024-01-01T00:00:00Z}")',
+        insertTextRules: InsertTextRules.InsertAsSnippet,
+        sortText: '0000',
+      },
+      {
+        label: 'Date (Extended JSON)',
+        kind: CompletionKind.Snippet,
+        detail: 'Extended JSON Date',
+        insertText: '{ "$$date": "${1:2024-01-01T00:00:00Z}" }',
+        insertTextRules: InsertTextRules.InsertAsSnippet,
+        sortText: '0001',
+      },
+    )
   }
 
   if (type === 'null') {
@@ -593,6 +633,26 @@ export function createQueryCompletionProvider(deps: CompletionProviderDeps) {
           const fieldNames = deps.getFieldNames()
           const schema = deps.getSchema()
           const fieldItems = buildFieldItems(fieldNames, schema, context.prefix)
+
+          // If cursor is right after an opening quote, set range to include it
+          // so inserting `"name"` replaces the existing `"` instead of doubling it
+          const charBefore = offset > 0 ? text[offset - 1] : ''
+          const prefixLen = context.prefix.length
+          if (charBefore === '"' || (prefixLen > 0 && offset - prefixLen - 1 >= 0 && text[offset - prefixLen - 1] === '"')) {
+            const quoteCol = charBefore === '"'
+              ? position.column - 1
+              : position.column - prefixLen - 1
+            const range = {
+              startLineNumber: position.lineNumber,
+              startColumn: quoteCol,
+              endLineNumber: position.lineNumber,
+              endColumn: position.column,
+            }
+            for (const item of fieldItems) {
+              item.range = range
+            }
+          }
+
           // Also offer logical operators at root level
           if (context.depth <= 1 && context.prefix === '') {
             const logicalItems = buildOperatorItems('logical', '')
@@ -615,7 +675,10 @@ export function createQueryCompletionProvider(deps: CompletionProviderDeps) {
         case 'value': {
           const schema = deps.getSchema()
           const fieldType = getFieldType(schema, context.fieldName)
-          return { suggestions: buildValueItems(fieldType) }
+          const valueItems = buildValueItems(fieldType)
+          // Also offer mongosh constructors in value context
+          const mongoshItems = buildOperatorItems('mongosh', '')
+          return { suggestions: [...valueItems, ...mongoshItems] }
         }
 
         case 'none':

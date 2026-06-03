@@ -478,16 +478,24 @@ describe('buildValueItems', () => {
 
   it('suggests ObjectId wrapper for objectId type', () => {
     const items = buildValueItems('objectId')
-    expect(items.length).toBeGreaterThan(0)
-    expect(items[0].label).toBe('ObjectId')
-    expect(items[0].insertText).toContain('$oid')
+    expect(items.length).toBeGreaterThanOrEqual(2)
+    // First item: mongosh-style ObjectId()
+    expect(items[0].label).toBe('ObjectId()')
+    expect(items[0].insertText).toContain('ObjectId')
+    // Second item: Extended JSON
+    expect(items[1].label).toBe('ObjectId (Extended JSON)')
+    expect(items[1].insertText).toContain('$oid')
   })
 
   it('suggests Date wrapper for date type', () => {
     const items = buildValueItems('date')
-    expect(items.length).toBeGreaterThan(0)
-    expect(items[0].label).toBe('Date')
-    expect(items[0].insertText).toContain('$date')
+    expect(items.length).toBeGreaterThanOrEqual(2)
+    // First item: mongosh-style ISODate()
+    expect(items[0].label).toBe('ISODate()')
+    expect(items[0].insertText).toContain('ISODate')
+    // Second item: Extended JSON
+    expect(items[1].label).toBe('Date (Extended JSON)')
+    expect(items[1].insertText).toContain('$date')
   })
 
   it('suggests null for null type', () => {
@@ -627,7 +635,7 @@ describe('createQueryCompletionProvider', () => {
   it('returns value completions for objectId field', () => {
     const suggestions = callProvider('{ "_id": ', 1, 10)
     const labels = suggestions.map((s) => s.label)
-    expect(labels).toContain('ObjectId')
+    expect(labels).toContain('ObjectId()')
   })
 
   it('returns empty suggestions inside string value', () => {
@@ -695,9 +703,46 @@ describe('createQueryCompletionProvider', () => {
     expect(suggestions.length).toBeGreaterThan(0)
   })
 
-  it('returns empty for string field value', () => {
+  it('returns mongosh constructors for string field value', () => {
     const suggestions = callProvider('{ "name": ', 1, 11)
-    // String type → no value suggestions
-    expect(suggestions).toHaveLength(0)
+    // String type → no type-specific value items, but mongosh constructors are offered
+    const labels = suggestions.map((s) => s.label)
+    expect(labels).toContain('ObjectId()')
+    expect(labels).toContain('ISODate()')
+  })
+
+  it('sets range to include opening quote for field completions after "', () => {
+    // User typed { " and cursor is right after the quote
+    const suggestions = callProvider('{ "', 1, 4)
+    const fieldItems = suggestions.filter((s) => s.kind === 4) // Field kind
+    expect(fieldItems.length).toBeGreaterThan(0)
+    // Range should start at column 3 (the opening quote) so inserting `"name"` replaces `"`
+    for (const item of fieldItems) {
+      expect(item.range).toBeDefined()
+      expect(item.range!.startColumn).toBe(3)
+      expect(item.range!.endColumn).toBe(4)
+    }
+  })
+
+  it('sets range to include opening quote when prefix is typed after "', () => {
+    // User typed { "na and cursor is after "na"
+    const suggestions = callProvider('{ "na', 1, 6)
+    const fieldItems = suggestions.filter((s) => s.kind === 4) // Field kind
+    expect(fieldItems.length).toBeGreaterThan(0)
+    // Range should start at column 3 (the opening quote) and end at column 6 (cursor)
+    for (const item of fieldItems) {
+      expect(item.range).toBeDefined()
+      expect(item.range!.startColumn).toBe(3)
+      expect(item.range!.endColumn).toBe(6)
+    }
+  })
+
+  it('does not set range for field completions without opening quote', () => {
+    // After { with no quote — unquoted field context
+    const suggestions = callProvider('{ ', 1, 3)
+    const fieldItems = suggestions.filter((s) => s.kind === 4) // Field kind
+    for (const item of fieldItems) {
+      expect(item.range).toBeUndefined()
+    }
   })
 })
