@@ -157,8 +157,8 @@ install_wails() {
         return 0
     fi
 
-    info "Installing Wails CLI..."
-    go install github.com/wailsapp/wails/v2/cmd/wails@latest
+    info "Installing Wails CLI v2.11.0..."
+    go install github.com/wailsapp/wails/v2/cmd/wails@v2.11.0
     success "Wails installed"
 }
 

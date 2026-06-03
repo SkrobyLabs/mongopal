@@ -1,0 +1,275 @@
+name: Build
+
+on:
+  workflow_call:
+    inputs:
+      publish:
+        description: Upload platform artifacts
+        required: false
+        type: boolean
+        default: false
+      version:
+        description: Release version without the leading v
+        required: false
+        type: string
+        default: ""
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Upload platform artifacts
+        required: false
+        type: boolean
+        default: false
+      version:
+        description: Release version without the leading v
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: "20"
+  WAILS_VERSION: "v2.11.0"
+
+jobs:
+  verify:
+    name: Verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev imagemagick
+
+      - name: Install Wails
+        run: make install-wails WAILS_VERSION=${{ env.WAILS_VERSION }}
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: frontend
+
+      - name: Apply release product version
+        if: ${{ inputs.version != '' }}
+        run: |
+          version="${{ inputs.version }}"
+          ./scripts/set-wails-version.sh "${version#v}"
+
+      - name: Frontend build
+        run: npm run build
+        working-directory: frontend
+
+      - name: Generate Wails bindings
+        run: make generate
+
+      - name: TypeScript typecheck
+        run: make typecheck
+
+      - name: Unit tests
+        run: make test-unit
+
+      - name: Go vet
+        run: go vet -tags "webkit2_41" ./...
+
+  build-linux:
+    name: Build Linux amd64
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev imagemagick zip
+
+      - name: Install Wails
+        run: make install-wails WAILS_VERSION=${{ env.WAILS_VERSION }}
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: frontend
+
+      - name: Apply release product version
+        if: ${{ inputs.version != '' }}
+        run: |
+          version="${{ inputs.version }}"
+          ./scripts/set-wails-version.sh "${version#v}"
+
+      - name: Build
+        run: |
+          version="${{ inputs.version }}"
+          if [ -n "$version" ]; then
+            make build-linux-amd64 APP_VERSION="${version#v}" GIT_DIRTY=false BUILD_TAGS=webkit2_41
+          else
+            make build-linux-amd64 BUILD_TAGS=webkit2_41
+          fi
+
+      - name: Package
+        run: |
+          mkdir -p artifacts
+          zip -j artifacts/MongoPal-linux-amd64.zip build/bin/MongoPal-linux-amd64
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ inputs.publish }}
+        with:
+          name: MongoPal-linux-amd64
+          path: artifacts/MongoPal-linux-amd64.zip
+
+  build-windows:
+    name: Build Windows amd64
+    needs: verify
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Wails
+        shell: bash
+        run: make install-wails WAILS_VERSION=${{ env.WAILS_VERSION }}
+
+      - name: Install build tools
+        shell: pwsh
+        run: choco install make imagemagick -y --no-progress
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: frontend
+
+      - name: Apply release product version
+        if: ${{ inputs.version != '' }}
+        shell: bash
+        run: |
+          version="${{ inputs.version }}"
+          ./scripts/set-wails-version.sh "${version#v}"
+
+      - name: Build
+        shell: bash
+        run: |
+          version="${{ inputs.version }}"
+          if [ -n "$version" ]; then
+            make build-windows-amd64 APP_VERSION="${version#v}" GIT_DIRTY=false
+          else
+            make build-windows-amd64
+          fi
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifacts | Out-Null
+          Compress-Archive -Path build/bin/MongoPal-windows-amd64.exe -DestinationPath artifacts/MongoPal-windows-amd64.zip -Force
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ inputs.publish }}
+        with:
+          name: MongoPal-windows-amd64
+          path: artifacts/MongoPal-windows-amd64.zip
+
+  build-macos:
+    name: Build macOS ${{ matrix.arch }}
+    needs: verify
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            target: build-macos-amd64
+            zip: MongoPal-macos-amd64.zip
+            app: MongoPal-macos-amd64.app
+          - arch: arm64
+            target: build-macos-arm64
+            zip: MongoPal-macos-arm64.zip
+            app: MongoPal-macos-arm64.app
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Wails
+        run: make install-wails WAILS_VERSION=${{ env.WAILS_VERSION }}
+
+      - name: Install build tools
+        run: brew install imagemagick
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: frontend
+
+      - name: Apply release product version
+        if: ${{ inputs.version != '' }}
+        run: |
+          version="${{ inputs.version }}"
+          ./scripts/set-wails-version.sh "${version#v}"
+
+      - name: Build
+        run: |
+          version="${{ inputs.version }}"
+          if [ -n "$version" ]; then
+            make ${{ matrix.target }} APP_VERSION="${version#v}" GIT_DIRTY=false
+          else
+            make ${{ matrix.target }}
+          fi
+
+      - name: Package
+        run: |
+          mkdir -p artifacts/macos-readme
+          cat > artifacts/macos-readme/README.txt <<'EOF'
+          MongoPal macOS builds are currently unsigned and not notarized.
+          If macOS blocks the app, open System Settings > Privacy & Security and allow it, or remove the quarantine attribute with:
+          xattr -dr com.apple.quarantine MongoPal.app
+          EOF
+          cd build/bin
+          zip -r "../../artifacts/${{ matrix.zip }}" "${{ matrix.app }}"
+          cd ../..
+          zip -ur "artifacts/${{ matrix.zip }}" artifacts/macos-readme/README.txt
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ inputs.publish }}
+        with:
+          name: MongoPal-macos-${{ matrix.arch }}
+          path: artifacts/${{ matrix.zip }}

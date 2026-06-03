@@ -33,7 +33,7 @@ A lightweight, cross-platform MongoDB GUI for exploring, viewing, and editing do
 
 - Go 1.24 or later
 - Node.js 18 or later
-- Wails CLI (`go install github.com/wailsapp/wails/v2/cmd/wails@latest`)
+- Wails CLI (`make install-wails`, pinned to Wails v2.11.0)
 
 ## Development
 
@@ -62,7 +62,7 @@ The binary will be created in `build/bin/`.
 ### Build for specific platforms
 
 ```bash
-# macOS universal binary
+# macOS amd64 and arm64 app bundles
 make build-darwin
 
 # Windows
@@ -71,6 +71,30 @@ make build-windows
 # Linux
 make build-linux
 ```
+
+### Version metadata
+
+MongoPal builds include runtime version metadata exposed through Wails via `GetVersionInfo`. Local builds use the exact git tag when the current commit is tagged, otherwise they report the current commit as a development build. Dirty working trees are marked as development builds.
+
+## Releases
+
+Pull requests run the reusable GitHub Actions build workflow automatically, and maintainers can trigger it manually from the Actions tab. The workflow runs unit tests, TypeScript typecheck, `go vet`, and frontend build before platform packaging.
+
+To publish a release:
+
+```bash
+git tag -a vX.Y.Z -m "MongoPal vX.Y.Z"
+git push origin vX.Y.Z
+```
+
+Pushing a `v*` tag runs the release workflow, builds platform artifacts, generates GitHub release notes, and publishes a release with:
+
+- `MongoPal-linux-amd64.zip`
+- `MongoPal-windows-amd64.zip`
+- `MongoPal-macos-amd64.zip`
+- `MongoPal-macos-arm64.zip`
+
+Release builds patch `wails.json` product metadata from the tag version before packaging. macOS artifacts are currently unsigned and not notarized; users may need to allow the app in macOS Privacy & Security or remove the quarantine attribute manually.
 
 ## Project Structure
 

@@ -1,8 +1,20 @@
-.PHONY: help dev build clean install test test-unit test-unit-go test-unit-frontend typecheck test-watch test-integration test-integration-go test-integration-frontend test-coverage test-coverage-go test-coverage-frontend setup setup-quick install-hooks install-frontend generate doctor fmt lint frontend-dist appicon seed-testdb seed-testdb-stop
+.PHONY: help dev build build-prod build-darwin build-windows build-linux build-windows-amd64 build-macos-amd64 build-macos-arm64 build-linux-amd64 clean install test test-unit test-unit-go test-unit-frontend typecheck test-watch test-integration test-integration-go test-integration-frontend test-coverage test-coverage-go test-coverage-frontend setup setup-quick install-hooks install-frontend install-wails generate doctor fmt lint frontend-dist appicon seed-testdb seed-testdb-stop .require-wails
 
 # Ensure Go bin is in PATH
-GOBIN := $(shell go env GOPATH)/bin
+GOBIN ?= $(shell go env GOPATH 2>/dev/null)/bin
 export PATH := $(GOBIN):$(PATH)
+
+WAILS_VERSION ?= v2.11.0
+WAILS ?= $(shell command -v wails 2>/dev/null || echo "$(GOBIN)/wails")
+MAGICK ?= $(shell command -v magick 2>/dev/null || command -v convert 2>/dev/null)
+UNAME_S := $(shell uname -s 2>/dev/null || echo "")
+BUILD_TAGS ?= $(shell if [ "$(UNAME_S)" = "Linux" ] && ! pkg-config --exists webkit2gtk-4.0 2>/dev/null && pkg-config --exists webkit2gtk-4.1 2>/dev/null; then echo "webkit2_41"; fi)
+BUILD_TAG_FLAGS := $(if $(strip $(BUILD_TAGS)),-tags "$(BUILD_TAGS)",)
+GIT_COMMIT ?= $(shell git rev-parse HEAD 2>/dev/null || echo "")
+GIT_DIRTY ?= $(shell git diff --quiet 2>/dev/null && git diff --cached --quiet 2>/dev/null && echo "false" || echo "true")
+APP_VERSION ?= $(shell git describe --tags --exact-match 2>/dev/null | sed 's/^v//' || true)
+VERSION_LDFLAGS := -X main.AppVersion=$(APP_VERSION) -X main.GitCommit=$(GIT_COMMIT) -X main.GitDirty=$(GIT_DIRTY)
+BUILD_FLAGS := -trimpath $(BUILD_TAG_FLAGS) -ldflags "-s -w $(VERSION_LDFLAGS)"
 
 # Default target
 .DEFAULT_GOAL := help
@@ -21,6 +33,7 @@ help:
 	@echo "  setup          Full setup (system deps, Go, Node, Wails, npm, hooks)"
 	@echo "  setup-quick    Setup without system dependencies"
 	@echo "  install        Install Go and npm dependencies"
+	@echo "  install-wails  Install pinned Wails CLI ($(WAILS_VERSION))"
 	@echo "  install-hooks  Install git pre-commit hooks"
 	@echo "  install-frontend  Install frontend npm dependencies only"
 	@echo ""
@@ -32,9 +45,13 @@ help:
 	@echo "Build:"
 	@echo "  build          Build for current platform"
 	@echo "  build-prod     Build optimized for production"
-	@echo "  build-darwin   Build for macOS (universal)"
+	@echo "  build-darwin   Build for macOS (amd64 and arm64)"
 	@echo "  build-windows  Build for Windows (amd64)"
 	@echo "  build-linux    Build for Linux (amd64)"
+	@echo "  build-macos-amd64    Build release artifact for macOS amd64"
+	@echo "  build-macos-arm64    Build release artifact for macOS arm64"
+	@echo "  build-windows-amd64  Build release artifact for Windows amd64"
+	@echo "  build-linux-amd64    Build release artifact for Linux amd64"
 	@echo ""
 	@echo "Testing:"
 	@echo "  test                      Run all tests (unit + integration)"
@@ -84,6 +101,9 @@ install:
 	cd frontend && npm install
 	go mod download
 
+install-wails:
+	go install github.com/wailsapp/wails/v2/cmd/wails@$(WAILS_VERSION)
+
 # ===========================================
 # Development
 # ===========================================
@@ -96,33 +116,60 @@ frontend-dist:
 	fi
 
 dev: generate frontend-dist
-	$(GOBIN)/wails dev
+	$(WAILS) dev
 
 # ===========================================
 # Build
 # ===========================================
 
 # Generate app icon PNG from SVG source
-appicon:
-	magick -background none build/appicon.svg -resize 1024x1024 build/appicon.png
+appicon: build/appicon.png
+
+build/appicon.png: build/appicon.svg
+	@if [ -z "$(MAGICK)" ]; then \
+		echo "ImageMagick not found. Install 'magick' or 'convert' to generate build/appicon.png."; \
+		exit 1; \
+	fi
+	$(MAGICK) -background none $< -resize 1024x1024 $@
+
+.require-wails:
+	@if [ ! -x "$(WAILS)" ]; then \
+		echo "Wails CLI not found. Install it with: make install-wails"; \
+		exit 1; \
+	fi
 
 # Build for current platform
-build: appicon generate
-	$(GOBIN)/wails build
+build: .require-wails appicon generate
+	$(WAILS) build $(BUILD_TAG_FLAGS) -ldflags "$(VERSION_LDFLAGS)"
 
 # Build for production (optimized)
-build-prod: appicon generate
-	$(GOBIN)/wails build -production
+build-prod: .require-wails appicon generate
+	$(WAILS) build -production $(BUILD_FLAGS)
 
 # Build for specific platforms
-build-darwin: appicon generate
-	$(GOBIN)/wails build -platform darwin/universal
+build-darwin: appicon generate build-macos-amd64 build-macos-arm64
 
-build-windows: appicon generate
-	$(GOBIN)/wails build -platform windows/amd64
+build-windows: build-windows-amd64
 
-build-linux: appicon generate
-	$(GOBIN)/wails build -platform linux/amd64
+build-linux: build-linux-amd64
+
+build-windows-amd64: .require-wails appicon generate
+	$(WAILS) build -production -platform windows/amd64 -o MongoPal-windows-amd64.exe $(BUILD_FLAGS)
+
+build-macos-amd64: .require-wails appicon generate
+	$(WAILS) build -production -platform darwin/amd64 -o MongoPal-macos-amd64 $(BUILD_FLAGS)
+	@if [ -d build/bin/MongoPal.app ] && [ ! -d build/bin/MongoPal-macos-amd64.app ]; then mv build/bin/MongoPal.app build/bin/MongoPal-macos-amd64.app; fi
+	@if [ -d build/bin/mongopal.app ] && [ ! -d build/bin/MongoPal-macos-amd64.app ]; then mv build/bin/mongopal.app build/bin/MongoPal-macos-amd64.app; fi
+	@test -d build/bin/MongoPal-macos-amd64.app
+
+build-macos-arm64: .require-wails appicon generate
+	$(WAILS) build -production -platform darwin/arm64 -o MongoPal-macos-arm64 $(BUILD_FLAGS)
+	@if [ -d build/bin/MongoPal.app ] && [ ! -d build/bin/MongoPal-macos-arm64.app ]; then mv build/bin/MongoPal.app build/bin/MongoPal-macos-arm64.app; fi
+	@if [ -d build/bin/mongopal.app ] && [ ! -d build/bin/MongoPal-macos-arm64.app ]; then mv build/bin/mongopal.app build/bin/MongoPal-macos-arm64.app; fi
+	@test -d build/bin/MongoPal-macos-arm64.app
+
+build-linux-amd64: .require-wails appicon generate
+	$(WAILS) build -production -platform linux/amd64 -o MongoPal-linux-amd64 $(BUILD_FLAGS)
 
 # ===========================================
 # Testing
@@ -135,7 +182,7 @@ test: test-unit test-integration
 test-unit: test-unit-frontend test-unit-go
 
 # Run Go unit tests
-test-unit-go:
+test-unit-go: frontend-dist
 	go test -v ./...
 
 # Run TypeScript type checking
@@ -185,12 +232,12 @@ clean:
 	rm -rf frontend/node_modules
 
 # Generate Wails bindings
-generate:
-	$(GOBIN)/wails generate module
+generate: .require-wails frontend-dist
+	$(WAILS) generate module
 
 # Check Wails doctor
 doctor:
-	$(GOBIN)/wails doctor
+	$(WAILS) doctor
 
 # Format code
 fmt:
@@ -199,7 +246,7 @@ fmt:
 
 # Lint
 lint:
-	go vet ./...
+	go vet $(BUILD_TAG_FLAGS) ./...
 	golangci-lint run || true
 	cd frontend && npm run lint
 

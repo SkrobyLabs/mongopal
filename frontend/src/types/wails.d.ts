@@ -95,6 +95,9 @@ export interface WailsAppBindings {
   // Debug
   SetDebugEnabled?(enabled: boolean): void
 
+  // Runtime build metadata
+  GetVersionInfo?(): Promise<VersionInfo>
+
   // Collection profile (health check)
   GetCollectionProfile?(
     connectionId: string,
@@ -265,6 +268,15 @@ export interface CollectionProfile {
   totalFieldPaths: number
   maxNestingDepth: number
   topFields: string[]
+}
+
+export interface VersionInfo {
+  version: string
+  commit: string
+  shortCommit: string
+  isDirty: boolean
+  isDev: boolean
+  isRelease: boolean
 }
 
 /**

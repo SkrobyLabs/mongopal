@@ -8,6 +8,8 @@ frontend/*.md5
 
 # Dependencies
 node_modules/
+frontend/node_modules/
+frontend/node_modules
 
 # IDE
 .idea/
