@@ -283,6 +283,31 @@ describe('DocumentEditView', () => {
   })
 
   describe('save functionality', () => {
+    const renderEditor = (props = {}): void => {
+      render(
+        <AllProviders>
+          <DocumentEditView {...defaultProps} {...props} />
+        </AllProviders>
+      )
+    }
+
+    const changeEditor = async (value: string): Promise<void> => {
+      const editor = screen.getByTestId('mock-editor')
+      await act(async () => {
+        fireEvent.change(editor, { target: { value } })
+      })
+    }
+
+    const clickSave = async (): Promise<void> => {
+      const saveButton = screen.getByRole('button', { name: /save/i })
+      expect(saveButton).not.toBeDisabled()
+      await act(async () => {
+        fireEvent.click(saveButton)
+        await Promise.resolve()
+        vi.advanceTimersByTime(2000)
+      })
+    }
+
     it('shows Save button in edit mode', () => {
       render(
         <AllProviders>
@@ -322,6 +347,107 @@ describe('DocumentEditView', () => {
       )
 
       expect(screen.getByText('Read-only')).toBeInTheDocument()
+    })
+
+    it('saves an existing document when _id is unchanged', async () => {
+      mockGo.UpdateDocument.mockResolvedValue(undefined)
+      renderEditor()
+
+      await changeEditor('{"_id": "doc123", "name": "Updated User", "age": 25}')
+      await clickSave()
+
+      expect(mockGo.UpdateDocument).toHaveBeenCalledTimes(1)
+      expect(mockGo.UpdateDocument).toHaveBeenCalledWith(
+        'test-conn',
+        'testdb',
+        'users',
+        'doc123',
+        '{"_id": "doc123", "name": "Updated User", "age": 25}'
+      )
+      expect(mockGo.InsertDocument).not.toHaveBeenCalled()
+    })
+
+    it('blocks normal save and shows choices when _id changes', async () => {
+      mockGo.UpdateDocument.mockResolvedValue(undefined)
+      renderEditor()
+
+      await changeEditor('{"_id": "doc456", "name": "Updated User", "age": 25}')
+      await clickSave()
+
+      expect(screen.getByText('Document _id Changed')).toBeInTheDocument()
+      expect(mockGo.UpdateDocument).not.toHaveBeenCalled()
+      expect(mockGo.InsertDocument).not.toHaveBeenCalled()
+    })
+
+    it('cancels changed _id save without changing editor content', async () => {
+      renderEditor()
+
+      await changeEditor('{"_id": "doc456", "name": "Updated User", "age": 25}')
+      await clickSave()
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+
+      expect(screen.queryByText('Document _id Changed')).not.toBeInTheDocument()
+      expect(screen.getByTestId('mock-editor')).toHaveValue('{"_id": "doc456", "name": "Updated User", "age": 25}')
+      expect(mockGo.UpdateDocument).not.toHaveBeenCalled()
+      expect(mockGo.InsertDocument).not.toHaveBeenCalled()
+    })
+
+    it('restores original _id and saves the existing document', async () => {
+      mockGo.UpdateDocument.mockResolvedValue(undefined)
+      renderEditor()
+
+      await changeEditor('{"_id": "doc456", "name": "Updated User", "age": 25}')
+      await clickSave()
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Restore Original _id and Save' }))
+        await Promise.resolve()
+        vi.advanceTimersByTime(2000)
+      })
+
+      expect(mockGo.UpdateDocument).toHaveBeenCalledTimes(1)
+      const savedPayload = mockGo.UpdateDocument.mock.calls[0][4] as string
+      expect(JSON.parse(savedPayload)).toEqual({
+        _id: 'doc123',
+        age: 25,
+        name: 'Updated User',
+      })
+      expect(screen.getByTestId('mock-editor')).toHaveValue(savedPayload)
+      expect(mockGo.InsertDocument).not.toHaveBeenCalled()
+    })
+
+    it('inserts changed _id content as a new document', async () => {
+      mockGo.InsertDocument.mockResolvedValue('doc456')
+      renderEditor()
+
+      const changedContent = '{"_id": "doc456", "name": "Updated User", "age": 25}'
+      await changeEditor(changedContent)
+      await clickSave()
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Insert as New Document' }))
+        await Promise.resolve()
+      })
+
+      expect(mockGo.InsertDocument).toHaveBeenCalledTimes(1)
+      expect(mockGo.InsertDocument).toHaveBeenCalledWith('test-conn', 'testdb', 'users', changedContent)
+      expect(mockGo.UpdateDocument).not.toHaveBeenCalled()
+    })
+
+    it('allows user-provided _id in insert mode', async () => {
+      mockGo.InsertDocument.mockResolvedValue('custom-id')
+      renderEditor({ document: null, mode: 'insert' })
+
+      const newContent = '{"_id": "custom-id", "name": "New User"}'
+      await changeEditor(newContent)
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: /insert/i }))
+        await Promise.resolve()
+      })
+
+      expect(mockGo.InsertDocument).toHaveBeenCalledWith('test-conn', 'testdb', 'users', newContent)
+      expect(mockGo.UpdateDocument).not.toHaveBeenCalled()
     })
 
     it('shows view-only label and make editable control in view mode', () => {

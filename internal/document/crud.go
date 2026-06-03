@@ -3,6 +3,7 @@ package document
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -225,14 +226,21 @@ func (s *Service) UpdateDocument(connID, dbName, collName, docID, jsonDoc string
 
 	coll := client.Database(dbName).Collection(collName)
 
-	// Build filter using the _id from the document or the provided docID
-	var filter bson.M
+	// Existing-document updates must target the original document id. A replacement
+	// document may include _id, but it cannot change it.
+	originalID := ParseDocumentID(docID)
 	if id, ok := doc["_id"]; ok {
-		filter = bson.M{"_id": id}
-	} else {
-		filter = bson.M{"_id": ParseDocumentID(docID)}
+		if !documentIDsEqual(originalID, id) {
+			debug.LogDocument("Update failed - _id changed", map[string]interface{}{
+				"database":   dbName,
+				"collection": collName,
+				"documentId": docID,
+			})
+			return fmt.Errorf("document _id cannot be changed with UpdateDocument")
+		}
 	}
 
+	filter := bson.M{"_id": originalID}
 	result, err := coll.ReplaceOne(ctx, filter, doc)
 	if err != nil {
 		debug.LogDocument("Update failed", map[string]interface{}{
@@ -260,6 +268,10 @@ func (s *Service) UpdateDocument(connID, dbName, collName, docID, jsonDoc string
 	})
 
 	return nil
+}
+
+func documentIDsEqual(expected, actual interface{}) bool {
+	return reflect.DeepEqual(expected, actual)
 }
 
 // InsertDocument creates a new document.

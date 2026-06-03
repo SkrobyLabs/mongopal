@@ -93,8 +93,9 @@ interface DocumentGoBindings {
 // Constants
 // =============================================================================
 
-// Access window.go with type assertion for document-specific methods
-const go = (window as { go?: { main?: { App?: DocumentGoBindings } } }).go?.main?.App
+// Access window.go lazily so tests and restored sessions can install bindings after module load.
+const getGo = (): DocumentGoBindings | undefined =>
+  (window as { go?: { main?: { App?: DocumentGoBindings } } }).go?.main?.App
 
 /** Maximum number of history entries to keep */
 const MAX_HISTORY_ENTRIES = 50
@@ -137,6 +138,41 @@ function sortJsonString(jsonStr: string): string {
   } catch {
     return jsonStr
   }
+}
+
+const hasOwn = (obj: Record<string, unknown>, key: string): boolean =>
+  Object.prototype.hasOwnProperty.call(obj, key)
+
+function canonicalizeDocumentId(id: unknown): string {
+  return JSON.stringify(sortObjectKeys(id))
+}
+
+function getDocumentIdChange(originalJson: string, currentDoc: Record<string, unknown>): boolean {
+  const originalDoc = JSON.parse(originalJson) as Record<string, unknown>
+  const originalHasId = hasOwn(originalDoc, '_id')
+  const currentHasId = hasOwn(currentDoc, '_id')
+
+  if (originalHasId !== currentHasId) {
+    return true
+  }
+  if (!originalHasId) {
+    return false
+  }
+
+  return canonicalizeDocumentId(originalDoc._id) !== canonicalizeDocumentId(currentDoc._id)
+}
+
+function restoreOriginalDocumentId(originalJson: string, currentJson: string): string {
+  const originalDoc = JSON.parse(originalJson) as Record<string, unknown>
+  const currentDoc = JSON.parse(currentJson) as Record<string, unknown>
+
+  if (hasOwn(originalDoc, '_id')) {
+    currentDoc._id = originalDoc._id
+  } else {
+    delete currentDoc._id
+  }
+
+  return JSON.stringify(sortObjectKeys(currentDoc), null, 2)
 }
 
 /**
@@ -331,6 +367,7 @@ export default function DocumentEditView({
   const [hasChanges, setHasChanges] = useState<boolean>(false)
   const [originalContent, setOriginalContent] = useState<string>('')
   const [showRefreshConfirm, setShowRefreshConfirm] = useState<boolean>(false)
+  const [pendingIdChangeContent, setPendingIdChangeContent] = useState<string | null>(null)
 
   // Document loading state (for restored sessions)
   const [loadingDocument, setLoadingDocument] = useState<boolean>(false)
@@ -475,6 +512,7 @@ export default function DocumentEditView({
 
   // Load document from database (for restored sessions or when connection restored)
   const loadDocument = async (): Promise<void> => {
+    const go = getGo()
     if (!documentId || !go?.GetDocument) return
 
     setLoadingDocument(true)
@@ -574,39 +612,82 @@ export default function DocumentEditView({
     }
   }
 
+  const performUpdateSave = async (contentToSave: string): Promise<boolean> => {
+    const go = getGo()
+
+    if (!go?.UpdateDocument || !documentId) {
+      return false
+    }
+    try {
+      setSaving(true)
+      await go.UpdateDocument(connectionId, database, collection, documentId, contentToSave)
+      notify.success('Document saved')
+      // Add the PREVIOUS saved version to history (what we're replacing)
+      if (originalContent && originalContent !== baselineEntry?.content) {
+        addToHistory(originalContent)
+      }
+      setHasSavedOnce(true)
+      setContent(contentToSave)
+      editorRef.current?.setValue(contentToSave)
+      setOriginalContent(contentToSave)
+      setHasChanges(false)
+      setSaved(true)
+      setTimeout(() => setSaved(false), 1500)
+      if (onSave) onSave()
+      return true
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err)
+      notify.error(getErrorSummary(errorMsg))
+      return false
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const performInsert = async (contentToInsert: string): Promise<boolean> => {
+    const go = getGo()
+    if (!go?.InsertDocument) {
+      return false
+    }
+    setInserting(true)
+    try {
+      const newId = await go.InsertDocument(connectionId, database, collection, contentToInsert)
+      notify.success(`Document inserted: ${newId}`)
+
+      // Fetch the inserted document and convert tab to edit mode
+      if (go?.GetDocument && onInsertComplete) {
+        const docJson = await go.GetDocument(connectionId, database, collection, newId)
+        const doc = JSON.parse(docJson) as Record<string, unknown>
+        onInsertComplete(doc, newId)
+      }
+      return true
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err)
+      notify.error(getErrorSummary(errorMsg))
+      return false
+    } finally {
+      setInserting(false)
+    }
+  }
+
   const handleSave = async (): Promise<void> => {
     const currentContent = editorRef.current?.getValue() || content
+    let parsedDoc: Record<string, unknown>
 
     try {
-      JSON.parse(currentContent)
+      parsedDoc = JSON.parse(currentContent) as Record<string, unknown>
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err)
       notify.error(`Invalid JSON: ${errorMsg}`)
       return
     }
 
-    setSaving(true)
-    try {
-      if (go?.UpdateDocument && documentId) {
-        await go.UpdateDocument(connectionId, database, collection, documentId, currentContent)
-        notify.success('Document saved')
-        // Add the PREVIOUS saved version to history (what we're replacing)
-        if (originalContent && originalContent !== baselineEntry?.content) {
-          addToHistory(originalContent)
-        }
-        setHasSavedOnce(true)
-        setOriginalContent(currentContent)
-        setHasChanges(false)
-        setSaving(false)
-        setSaved(true)
-        setTimeout(() => setSaved(false), 1500)
-        if (onSave) onSave()
-      }
-    } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err)
-      notify.error(getErrorSummary(errorMsg))
-      setSaving(false)
+    if (!isInsertMode && originalContent && getDocumentIdChange(originalContent, parsedDoc)) {
+      setPendingIdChangeContent(currentContent)
+      return
     }
+
+    await performUpdateSave(currentContent)
   }
 
   const handleInsert = async (): Promise<void> => {
@@ -620,25 +701,27 @@ export default function DocumentEditView({
       return
     }
 
-    setInserting(true)
-    try {
-      if (go?.InsertDocument) {
-        const newId = await go.InsertDocument(connectionId, database, collection, currentContent)
-        notify.success(`Document inserted: ${newId}`)
+    await performInsert(currentContent)
+  }
 
-        // Fetch the inserted document and convert tab to edit mode
-        if (go?.GetDocument && onInsertComplete) {
-          const docJson = await go.GetDocument(connectionId, database, collection, newId)
-          const doc = JSON.parse(docJson) as Record<string, unknown>
-          onInsertComplete(doc, newId)
-        }
-      }
-    } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err)
-      notify.error(getErrorSummary(errorMsg))
-    } finally {
-      setInserting(false)
-    }
+  const cancelIdChangeSave = (): void => {
+    setPendingIdChangeContent(null)
+  }
+
+  const saveWithOriginalId = async (): Promise<void> => {
+    if (!pendingIdChangeContent) return
+
+    const restoredContent = restoreOriginalDocumentId(originalContent, pendingIdChangeContent)
+    setPendingIdChangeContent(null)
+    await performUpdateSave(restoredContent)
+  }
+
+  const insertChangedIdAsNew = async (): Promise<void> => {
+    if (!pendingIdChangeContent) return
+
+    const contentToInsert = pendingIdChangeContent
+    setPendingIdChangeContent(null)
+    await performInsert(contentToInsert)
   }
 
   const handleFormat = (): void => {
@@ -654,6 +737,7 @@ export default function DocumentEditView({
   }
 
   const doRefresh = async (): Promise<void> => {
+    const go = getGo()
     setRefreshing(true)
     try {
       if (go?.GetDocument && documentId) {
@@ -1034,6 +1118,35 @@ export default function DocumentEditView({
           doRefresh()
         }}
         onCancel={() => setShowRefreshConfirm(false)}
+      />
+
+      <ConfirmDialog
+        open={pendingIdChangeContent !== null}
+        title="Document _id Changed"
+        message={
+          <div className="space-y-3">
+            <p>
+              The document _id has changed. MongoDB cannot update an existing document to a different _id.
+            </p>
+            <p>
+              Restore the original _id to save changes to this document, insert the edited content as a new document, or cancel.
+            </p>
+            <div className="flex justify-end">
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={insertChangedIdAsNew}
+                disabled={inserting}
+              >
+                {inserting ? 'Inserting...' : 'Insert as New Document'}
+              </button>
+            </div>
+          </div>
+        }
+        confirmLabel={saving ? 'Saving...' : 'Restore Original _id and Save'}
+        cancelLabel="Cancel"
+        onConfirm={saveWithOriginalId}
+        onCancel={cancelIdChangeSave}
       />
     </div>
   )
