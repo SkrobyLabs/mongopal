@@ -69,12 +69,12 @@ jobs:
           version="${{ inputs.version }}"
           ./scripts/set-wails-version.sh "${version#v}"
 
+      - name: Generate Wails bindings
+        run: make generate
+
       - name: Frontend build
         run: npm run build
         working-directory: frontend
-
-      - name: Generate Wails bindings
-        run: make generate
 
       - name: TypeScript typecheck
         run: make typecheck

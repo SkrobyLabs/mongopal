@@ -1,4 +1,4 @@
-.PHONY: help dev build build-prod build-darwin build-windows build-linux build-windows-amd64 build-macos-amd64 build-macos-arm64 build-linux-amd64 clean install test test-unit test-unit-go test-unit-frontend typecheck test-watch test-integration test-integration-go test-integration-frontend test-coverage test-coverage-go test-coverage-frontend setup setup-quick install-hooks install-frontend install-wails generate doctor fmt lint frontend-dist appicon seed-testdb seed-testdb-stop .require-wails
+.PHONY: help dev build build-prod build-darwin build-windows build-linux build-windows-amd64 build-macos-amd64 build-macos-arm64 build-linux-amd64 clean install test test-unit test-unit-go test-unit-frontend typecheck test-watch test-integration test-integration-go test-integration-frontend test-coverage test-coverage-go test-coverage-frontend setup setup-quick install-hooks install-frontend install-wails generate doctor fmt lint frontend-dist frontend-dist-placeholder appicon seed-testdb seed-testdb-stop .require-wails
 
 # Ensure Go bin is in PATH
 GOBIN ?= $(shell go env GOPATH 2>/dev/null)/bin
@@ -113,6 +113,12 @@ frontend-dist:
 	@if [ ! -d "frontend/dist" ]; then \
 		echo "Building frontend (first run)..."; \
 		cd frontend && npm run build; \
+	fi
+
+frontend-dist-placeholder:
+	@if [ ! -d "frontend/dist" ]; then \
+		mkdir -p frontend/dist; \
+		printf '<!doctype html><title>placeholder</title>\n' > frontend/dist/index.html; \
 	fi
 
 dev: generate frontend-dist
@@ -232,8 +238,12 @@ clean:
 	rm -rf frontend/node_modules
 
 # Generate Wails bindings
-generate: .require-wails frontend-dist
+generate: .require-wails frontend-dist-placeholder
 	$(WAILS) generate module
+	@if [ -d frontend/wailsjs/wailsjs ]; then \
+		ln -sfn wailsjs/go frontend/wailsjs/go; \
+		ln -sfn wailsjs/runtime frontend/wailsjs/runtime; \
+	fi
 
 # Check Wails doctor
 doctor:
