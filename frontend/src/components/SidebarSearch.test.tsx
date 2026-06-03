@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 
 // =============================================================================
 // Type Definitions for Mocks
@@ -42,6 +42,14 @@ vi.mock('./NotificationContext', () => ({
   }),
 }))
 
+vi.mock('./CSVExportDialog', () => ({
+  default: () => null,
+}))
+
+vi.mock('./JSONExportDialog', () => ({
+  default: () => null,
+}))
+
 // Mock the connection context
 const mockConnect = vi.fn()
 const mockDisconnect = vi.fn()
@@ -60,6 +68,7 @@ const mockMoveConnectionToFolder = vi.fn()
 const mockMoveFolderToFolder = vi.fn()
 const mockLoadConnections = vi.fn()
 const mockIsConnecting = vi.fn().mockReturnValue(false)
+const mockOpenTab = vi.fn()
 
 vi.mock('./contexts/ConnectionContext', () => ({
   useConnection: () => ({
@@ -93,7 +102,7 @@ vi.mock('./contexts/ConnectionContext', () => ({
 // Mock the tab context
 vi.mock('./contexts/TabContext', () => ({
   useTab: () => ({
-    openTab: vi.fn(),
+    openTab: mockOpenTab,
     openSchemaTab: vi.fn(),
     closeTabsForConnection: vi.fn(),
     closeTabsForDatabase: vi.fn(),
@@ -117,6 +126,7 @@ beforeEach(() => {
       { name: 'orders', count: 5000 },
       { name: 'products', count: 500 },
     ] as MockCollection[])
+    window.go.main.App.UpdateDatabaseAccessed = vi.fn().mockResolvedValue(undefined)
   }
 })
 
@@ -138,6 +148,15 @@ import type { SidebarProps } from './sidebar'
 const findTreeItemWithText = (container: HTMLElement, text: string): boolean => {
   const treeItems = container.querySelectorAll('.tree-item')
   return Array.from(treeItems).some(item => item.textContent?.includes(text))
+}
+
+const getTreeItemWithText = (container: HTMLElement, text: string): HTMLElement => {
+  const treeItems = container.querySelectorAll('.tree-item')
+  const item = Array.from(treeItems).find(item => item.textContent?.includes(text))
+  if (!item) {
+    throw new Error(`Could not find tree item containing "${text}"`)
+  }
+  return item as HTMLElement
 }
 
 // =============================================================================
@@ -258,5 +277,95 @@ describe('Sidebar Search', () => {
     expect(highlightedSpans.length).toBeGreaterThan(0)
     expect(highlightedSpans[0].textContent).toBe('Prod')
     expect(highlightedSpans[0].classList.contains('text-warning')).toBe(true)
+  })
+
+  it('does not connect or expand a disconnected connection on single click', () => {
+    const { container } = render(<Sidebar {...defaultProps} />)
+    const developmentServer = getTreeItemWithText(container, 'Development Server')
+
+    vi.clearAllMocks()
+    fireEvent.click(developmentServer)
+
+    expect(mockConnect).not.toHaveBeenCalled()
+    expect(findTreeItemWithText(container, 'myapp_production')).toBe(false)
+  })
+
+  it('connects a disconnected connection on double click', () => {
+    const { container } = render(<Sidebar {...defaultProps} />)
+    const developmentServer = getTreeItemWithText(container, 'Development Server')
+
+    vi.clearAllMocks()
+    fireEvent.doubleClick(developmentServer)
+
+    expect(mockConnect).toHaveBeenCalledWith('conn2')
+  })
+
+  it('does not select or load a database on single click', async () => {
+    const { container } = render(<Sidebar {...defaultProps} />)
+    const productionServer = getTreeItemWithText(container, 'Production Server')
+
+    fireEvent.doubleClick(productionServer)
+    await screen.findByText('myapp_production')
+    const productionDatabase = getTreeItemWithText(container, 'myapp_production')
+
+    vi.clearAllMocks()
+    fireEvent.click(productionDatabase)
+
+    expect(mockSetSelectedDatabase).not.toHaveBeenCalled()
+    expect(window.go?.main?.App?.ListCollections).not.toHaveBeenCalled()
+    expect(findTreeItemWithText(container, 'users')).toBe(false)
+  })
+
+  it('selects and loads a database on double click', async () => {
+    const { container } = render(<Sidebar {...defaultProps} />)
+    const productionServer = getTreeItemWithText(container, 'Production Server')
+
+    fireEvent.doubleClick(productionServer)
+    await screen.findByText('myapp_production')
+    const productionDatabase = getTreeItemWithText(container, 'myapp_production')
+
+    vi.clearAllMocks()
+    fireEvent.doubleClick(productionDatabase)
+
+    expect(mockSetSelectedDatabase).toHaveBeenCalledWith('myapp_production')
+    await screen.findByText('users')
+    expect(window.go?.main?.App?.ListCollections).toHaveBeenCalledWith('conn1', 'myapp_production')
+  })
+
+  it('selects a collection on single click without opening a tab', async () => {
+    const { container } = render(<Sidebar {...defaultProps} />)
+    const productionServer = getTreeItemWithText(container, 'Production Server')
+
+    fireEvent.doubleClick(productionServer)
+    await screen.findByText('myapp_production')
+    const productionDatabase = getTreeItemWithText(container, 'myapp_production')
+    fireEvent.doubleClick(productionDatabase)
+    await screen.findByText('users')
+    const usersCollection = getTreeItemWithText(container, 'users')
+
+    vi.clearAllMocks()
+    fireEvent.click(usersCollection)
+
+    expect(mockSetSelectedCollection).toHaveBeenCalledWith('users')
+    expect(mockOpenTab).not.toHaveBeenCalled()
+  })
+
+  it('opens a collection on double click', async () => {
+    const { container } = render(<Sidebar {...defaultProps} />)
+    const productionServer = getTreeItemWithText(container, 'Production Server')
+
+    fireEvent.doubleClick(productionServer)
+    await screen.findByText('myapp_production')
+    const productionDatabase = getTreeItemWithText(container, 'myapp_production')
+    fireEvent.doubleClick(productionDatabase)
+    await screen.findByText('users')
+    const usersCollection = getTreeItemWithText(container, 'users')
+
+    vi.clearAllMocks()
+    fireEvent.doubleClick(usersCollection)
+
+    await waitFor(() => {
+      expect(mockOpenTab).toHaveBeenCalledWith('conn1', 'myapp_production', 'users')
+    })
   })
 })

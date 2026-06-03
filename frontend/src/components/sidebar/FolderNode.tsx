@@ -41,7 +41,7 @@ export function FolderNode({
       level={level}
       expanded={expanded}
       onToggle={onToggle}
-      onClick={onToggle}
+      onDoubleClick={onToggle}
       onContextMenu={onContextMenu}
       nodeId={folderNodeId}
       isFocused={focusedNodeId === folderNodeId}

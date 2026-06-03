@@ -308,7 +308,7 @@ export function ConnectionNode({
       }
       return `Connected to ${connection.name} - Right-click for options`
     }
-    return `Disconnected - Click to connect to ${connection.name}`
+    return `Disconnected - Double-click to connect to ${connection.name}`
   }
 
   const connectionNodeId = `conn:${connection.id}`
@@ -339,7 +339,7 @@ export function ConnectionNode({
         }
         setExpanded(!expanded)
       }}
-      onClick={() => {
+      onDoubleClick={() => {
         if (!isConnected && !isConnecting) {
           onConnect(connection.id)
         }
@@ -403,7 +403,7 @@ export function ConnectionNode({
               level={level + 1}
               expanded={getDbExpanded(db.name)}
               onToggle={() => toggleDatabase(db.name)}
-              onClick={() => {
+              onDoubleClick={() => {
                 onSelectDatabase(db.name)
                 toggleDatabase(db.name)
               }}
