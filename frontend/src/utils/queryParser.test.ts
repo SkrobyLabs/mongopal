@@ -1,5 +1,16 @@
 import { describe, it, expect } from 'vitest'
-import { parseFilterFromQuery, parseProjectionFromQuery, buildFullQuery, isSimpleFindQuery, wrapScriptForOutput, shellToJson, convertMongoshConstructors, convertRegexLiterals } from './queryParser'
+import {
+  parseFilterFromQuery,
+  parseProjectionFromQuery,
+  parseSortFromQuery,
+  parseLimitFromQuery,
+  buildFullQuery,
+  isSimpleFindQuery,
+  wrapScriptForOutput,
+  shellToJson,
+  convertMongoshConstructors,
+  convertRegexLiterals,
+} from './queryParser'
 
 describe('shellToJson', () => {
   it('converts unquoted keys to quoted keys', () => {
@@ -207,6 +218,16 @@ describe('parseFilterFromQuery - edge cases', () => {
   it('handles whitespace only', () => {
     expect(parseFilterFromQuery('   ')).toBe('{}')
   })
+
+  it('extracts only find arguments from chained sort and limit query', () => {
+    const query = `db.environment_agents.find(
+      { SessionId: UUID("550e8400-e29b-41d4-a716-446655440000"), WorkspaceId: "workspace-1" },
+      { CreatedAt: 1, Status: 1, BranchName: 1, Task: 1, Summary: 1 }
+    ).sort({ CreatedAt: -1 })
+    .limit(2)`
+
+    expect(parseFilterFromQuery(query)).toBe('{ "SessionId": {"$uuid": "550e8400-e29b-41d4-a716-446655440000"}, "WorkspaceId": "workspace-1" }')
+  })
 })
 
 describe('buildFullQuery', () => {
@@ -271,6 +292,37 @@ describe('parseProjectionFromQuery', () => {
     const query = 'db.users.find({}, { items: { $elemMatch: { status: "A" } } })'
     expect(parseProjectionFromQuery(query)).toBe('{ "items": { "$elemMatch": { "status": "A" } } }')
   })
+
+  it('extracts projection from chained sort and limit query', () => {
+    const query = `db.environment_agents.find(
+      { SessionId: UUID("550e8400-e29b-41d4-a716-446655440000"), WorkspaceId: "workspace-1" },
+      { CreatedAt: 1, Status: 1, BranchName: 1, Task: 1, Summary: 1 }
+    ).sort({ CreatedAt: -1 })
+    .limit(2)`
+
+    expect(parseProjectionFromQuery(query)).toBe('{ "CreatedAt": 1, "Status": 1, "BranchName": 1, "Task": 1, "Summary": 1 }')
+  })
+})
+
+describe('parseSortFromQuery', () => {
+  it('returns empty string when no sort chain is present', () => {
+    expect(parseSortFromQuery('db.users.find({ active: true })')).toBe('')
+  })
+
+  it('extracts sort from chained find query', () => {
+    const query = 'db.users.find({ active: true }).sort({ CreatedAt: -1 })'
+    expect(parseSortFromQuery(query)).toBe('{ "CreatedAt": -1 }')
+  })
+})
+
+describe('parseLimitFromQuery', () => {
+  it('returns null when no limit chain is present', () => {
+    expect(parseLimitFromQuery('db.users.find({ active: true })')).toBe(null)
+  })
+
+  it('extracts limit from chained find query', () => {
+    expect(parseLimitFromQuery('db.users.find({ active: true }).limit(2)')).toBe(2)
+  })
 })
 
 describe('isSimpleFindQuery', () => {
@@ -289,6 +341,14 @@ describe('isSimpleFindQuery', () => {
     expect(isSimpleFindQuery('db.getCollection("users").find({})')).toBe(true)
     expect(isSimpleFindQuery('db.users.find({ active: true })')).toBe(true)
     expect(isSimpleFindQuery('db.collection.find(  )')).toBe(true)
+  })
+
+  it('returns true for supported chained find query', () => {
+    expect(isSimpleFindQuery('db.users.find({ active: true }).sort({ CreatedAt: -1 }).limit(2)')).toBe(true)
+  })
+
+  it('returns false for unsupported chained find query', () => {
+    expect(isSimpleFindQuery('db.users.find({ active: true }).count()')).toBe(false)
   })
 
   it('returns false for .find without parentheses', () => {

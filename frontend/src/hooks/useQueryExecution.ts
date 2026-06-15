@@ -10,6 +10,8 @@ import type { CollectionProfile, WailsAppBindings } from '../types/wails.d'
 import {
   parseFilterFromQuery,
   parseProjectionFromQuery,
+  parseLimitFromQuery,
+  parseSortFromQuery,
   buildFullQuery,
   isSimpleFindQuery,
   wrapScriptForOutput,
@@ -490,6 +492,8 @@ export function useQueryExecution({
       if (isSimple) {
         const filter = parseFilterFromQuery(query)
         const queryProjection = parseProjectionFromQuery(query)
+        const querySort = parseSortFromQuery(query)
+        const queryLimit = parseLimitFromQuery(query)
 
         // Auto-projection for wide collections (LDH-03)
         let effectiveProjection = queryProjection || ''
@@ -505,8 +509,8 @@ export function useQueryExecution({
         if (go?.FindDocuments) {
           const result = await go.FindDocuments(connectionId, database, collection, filter, {
             skip,
-            limit: effectiveLimit,
-            sort: '',
+            limit: queryLimit ?? effectiveLimit,
+            sort: querySort,
             projection: effectiveProjection,
           } as Parameters<typeof go.FindDocuments>[4])
           if (currentQueryId !== queryIdRef.current) return

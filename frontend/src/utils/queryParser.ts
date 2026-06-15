@@ -6,6 +6,11 @@ export interface SplitFindResult {
   projection: string | null
 }
 
+interface FindInvocationResult {
+  args: string
+  endIndex: number
+}
+
 /**
  * Result of parsing a variable assignment statement
  */
@@ -134,14 +139,101 @@ function extractParenArg(input: string, parenIndex: number): { value: string; en
   if (input[parenIndex] !== '(') return null
   let depth = 1
   let i = parenIndex + 1
+  let inString = false
+  let stringChar: string | null = null
+
   while (i < input.length && depth > 0) {
-    if (input[i] === '(') depth++
-    else if (input[i] === ')') depth--
+    const char = input[i]
+    const prevChar = i > 0 ? input[i - 1] : ''
+
+    if ((char === '"' || char === "'" || char === '`') && prevChar !== '\\') {
+      if (!inString) {
+        inString = true
+        stringChar = char
+      } else if (char === stringChar) {
+        inString = false
+        stringChar = null
+      }
+      i++
+      continue
+    }
+
+    if (inString) {
+      i++
+      continue
+    }
+
+    if (char === '(') depth++
+    else if (char === ')') depth--
     i++
   }
   if (depth !== 0) return null
   const value = input.slice(parenIndex + 1, i - 1).trim()
   return { value, endIndex: i - 1 }
+}
+
+function extractFindInvocation(input: string): FindInvocationResult | null {
+  const findMatch = input.match(/\.find\s*\(/)
+  if (!findMatch || findMatch.index === undefined) return null
+
+  const parenIndex = findMatch.index + findMatch[0].lastIndexOf('(')
+  const arg = extractParenArg(input, parenIndex)
+  if (!arg) return null
+
+  return { args: arg.value, endIndex: arg.endIndex }
+}
+
+function extractChainedMethodArg(input: string, method: string, startIndex: number): string | null {
+  let i = startIndex + 1
+
+  while (i < input.length) {
+    while (i < input.length && /\s/.test(input[i])) i++
+
+    if (input[i] !== '.') return null
+    i++
+
+    const nameStart = i
+    while (i < input.length && /[a-zA-Z_$]/.test(input[i])) i++
+    const name = input.slice(nameStart, i)
+
+    while (i < input.length && /\s/.test(input[i])) i++
+    if (input[i] !== '(') return null
+
+    const arg = extractParenArg(input, i)
+    if (!arg) return null
+
+    if (name === method) return arg.value
+
+    i = arg.endIndex + 1
+  }
+
+  return null
+}
+
+function hasOnlySupportedFindChains(input: string, startIndex: number): boolean {
+  let i = startIndex + 1
+
+  while (i < input.length) {
+    while (i < input.length && /\s/.test(input[i])) i++
+    if (i >= input.length) return true
+
+    if (input[i] !== '.') return false
+    i++
+
+    const nameStart = i
+    while (i < input.length && /[a-zA-Z_$]/.test(input[i])) i++
+    const name = input.slice(nameStart, i)
+    if (name !== 'sort' && name !== 'limit') return false
+
+    while (i < input.length && /\s/.test(input[i])) i++
+    if (input[i] !== '(') return false
+
+    const arg = extractParenArg(input, i)
+    if (!arg) return false
+    i = arg.endIndex + 1
+  }
+
+  return true
 }
 
 /**
@@ -328,9 +420,9 @@ export function isSimpleFindQuery(query: string | null | undefined): boolean {
   if (!trimmed || trimmed.startsWith('{')) return true
   // Multi-statement scripts are not simple queries
   if (trimmed.includes(';')) return false
-  // Must be db.something.find({...}) with proper parentheses at the end
-  const findMatch = trimmed.match(/\.find\s*\(\s*([\s\S]*)\s*\)\s*$/)
-  return findMatch !== null
+  const find = extractFindInvocation(trimmed)
+  if (!find) return false
+  return hasOnlySupportedFindChains(trimmed, find.endIndex)
 }
 
 /**
@@ -404,14 +496,13 @@ export function parseFilterFromQuery(queryStr: string): string {
     return shellToJson(trimmed)
   }
 
-  // Try to extract content from .find(...) - get everything between the parentheses
+  // Try to extract content from .find(...) using balanced parentheses.
   // This handles both db.getCollection("x").find({}) and db.collection.find({})
-  const findMatch = trimmed.match(/\.find\s*\(\s*([\s\S]*)\s*\)/)
-  if (findMatch) {
-    const content = findMatch[1].trim()
-    if (!content) return '{}'
+  const find = extractFindInvocation(trimmed)
+  if (find) {
+    if (!find.args) return '{}'
     // Split into filter and projection, return only filter (converted to JSON)
-    const { filter } = splitFindArguments(content)
+    const { filter } = splitFindArguments(find.args)
     return shellToJson(filter)
   }
 
@@ -436,17 +527,36 @@ export function parseProjectionFromQuery(queryStr: string): string | null {
     return null
   }
 
-  // Try to extract content from .find(...)
-  const findMatch = trimmed.match(/\.find\s*\(\s*([\s\S]*)\s*\)/)
-  if (findMatch) {
-    const content = findMatch[1].trim()
-    if (!content) return null
-    const { projection } = splitFindArguments(content)
+  const find = extractFindInvocation(trimmed)
+  if (find) {
+    if (!find.args) return null
+    const { projection } = splitFindArguments(find.args)
     // Convert projection to JSON if present
     return projection ? shellToJson(projection) : null
   }
 
   return null
+}
+
+export function parseSortFromQuery(queryStr: string): string {
+  const trimmed = queryStr.trim()
+  const find = extractFindInvocation(trimmed)
+  if (!find) return ''
+
+  const sortArg = extractChainedMethodArg(trimmed, 'sort', find.endIndex)
+  return sortArg ? shellToJson(sortArg) : ''
+}
+
+export function parseLimitFromQuery(queryStr: string): number | null {
+  const trimmed = queryStr.trim()
+  const find = extractFindInvocation(trimmed)
+  if (!find) return null
+
+  const limitArg = extractChainedMethodArg(trimmed, 'limit', find.endIndex)
+  if (!limitArg || !/^\d+$/.test(limitArg.trim())) return null
+
+  const parsed = Number.parseInt(limitArg.trim(), 10)
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null
 }
 
 /**

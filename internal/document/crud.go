@@ -100,17 +100,25 @@ func (s *Service) FindDocuments(connID, dbName, collName, query string, opts typ
 
 	// Parse sort
 	if opts.Sort != "" {
-		sortDoc := bson.D{}
-		// Simple format: "-fieldName" for descending, "fieldName" for ascending
-		for _, field := range strings.Split(opts.Sort, ",") {
-			field = strings.TrimSpace(field)
-			if strings.HasPrefix(field, "-") {
-				sortDoc = append(sortDoc, bson.E{Key: field[1:], Value: -1})
-			} else {
-				sortDoc = append(sortDoc, bson.E{Key: field, Value: 1})
+		if strings.HasPrefix(strings.TrimSpace(opts.Sort), "{") {
+			var sortDoc bson.D
+			if err := bson.UnmarshalExtJSON([]byte(opts.Sort), true, &sortDoc); err != nil {
+				return nil, fmt.Errorf("invalid sort: %w", err)
 			}
+			findOpts.SetSort(sortDoc)
+		} else {
+			sortDoc := bson.D{}
+			// Simple format: "-fieldName" for descending, "fieldName" for ascending
+			for _, field := range strings.Split(opts.Sort, ",") {
+				field = strings.TrimSpace(field)
+				if strings.HasPrefix(field, "-") {
+					sortDoc = append(sortDoc, bson.E{Key: field[1:], Value: -1})
+				} else {
+					sortDoc = append(sortDoc, bson.E{Key: field, Value: 1})
+				}
+			}
+			findOpts.SetSort(sortDoc)
 		}
-		findOpts.SetSort(sortDoc)
 	}
 
 	// Execute query
