@@ -222,7 +222,8 @@ func (s *Service) UpdateDocument(connID, dbName, collName, docID, jsonDoc string
 
 	// Parse the JSON document
 	var doc bson.M
-	if err := bson.UnmarshalExtJSON([]byte(jsonDoc), true, &doc); err != nil {
+	normalizedDoc := NormalizeShellConstructors(jsonDoc)
+	if err := bson.UnmarshalExtJSON([]byte(normalizedDoc), false, &doc); err != nil {
 		debug.LogDocument("Update failed - invalid JSON", map[string]interface{}{
 			"database":   dbName,
 			"collection": collName,
@@ -299,7 +300,8 @@ func (s *Service) InsertDocument(connID, dbName, collName, jsonDoc string) (stri
 
 	// Parse the JSON document
 	var doc bson.M
-	if err := bson.UnmarshalExtJSON([]byte(jsonDoc), true, &doc); err != nil {
+	normalizedDoc := NormalizeShellConstructors(jsonDoc)
+	if err := bson.UnmarshalExtJSON([]byte(normalizedDoc), false, &doc); err != nil {
 		debug.LogDocument("Insert failed - invalid JSON", map[string]interface{}{
 			"database":   dbName,
 			"collection": collName,

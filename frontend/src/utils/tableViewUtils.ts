@@ -3,6 +3,8 @@
  * These functions are extracted for testability and reusability.
  */
 
+import { formatExtendedJsonValue, stringifyExtendedJsonShell } from './ejsonShell'
+
 // ============================================================================
 // Type Definitions
 // ============================================================================
@@ -370,13 +372,13 @@ export function formatValue(value: unknown): FormattedValue {
       return { type: 'objectId', display: `ObjectId("${oid.slice(0, 8)}...")`, fullId: oid }
     }
     if (obj.$numberLong) {
-      return { type: 'numberLong', display: obj.$numberLong as string }
+      return { type: 'numberLong', display: formatExtendedJsonValue(obj) || (obj.$numberLong as string) }
     }
     if (obj.$numberInt) {
-      return { type: 'numberInt', display: obj.$numberInt as string }
+      return { type: 'numberInt', display: formatExtendedJsonValue(obj) || (obj.$numberInt as string) }
     }
     if (obj.$numberDouble) {
-      return { type: 'numberDouble', display: obj.$numberDouble as string }
+      return { type: 'numberDouble', display: formatExtendedJsonValue(obj) || (obj.$numberDouble as string) }
     }
     if (obj.$binary) {
       const binary = obj.$binary as { base64?: string }
@@ -403,7 +405,7 @@ export function getRawValue(value: unknown, maxSize: number = 1024 * 1024): stri
   if (value === null) return 'null'
   if (value === undefined) return 'undefined'
   if (typeof value === 'object') {
-    const json = JSON.stringify(value, null, 2)
+    const json = stringifyExtendedJsonShell(value, 2)
     if (json.length > maxSize) {
       return json.slice(0, maxSize) + '\n\n// ... Truncated (' + (json.length / 1024).toFixed(0) + ' KB total)'
     }
@@ -552,9 +554,9 @@ const TYPE_CONTENT_WIDTHS: TypeContentWidths = {
   null: 45,          // "null"
   undefined: 45,     // "undefined"
   number: 80,        // typical numbers
-  numberInt: 80,
-  numberLong: 100,
-  numberDouble: 100,
+  numberInt: 105,
+  numberLong: 190,
+  numberDouble: 145,
   objectId: 200,     // ObjectId("12345678...")
   uuid: 290,         // UUID("12345678-1234-1234-1234-123456789012")
   binary: 160,       // Binary("...")

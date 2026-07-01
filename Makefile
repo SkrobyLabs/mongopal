@@ -1,4 +1,4 @@
-.PHONY: help dev build build-prod build-darwin build-windows build-linux build-windows-amd64 build-macos-amd64 build-macos-arm64 build-linux-amd64 clean install test test-unit test-unit-go test-unit-frontend typecheck test-watch test-integration test-integration-go test-integration-frontend test-coverage test-coverage-go test-coverage-frontend setup setup-quick install-hooks install-frontend install-wails generate doctor fmt lint frontend-dist frontend-dist-placeholder appicon seed-testdb seed-testdb-stop .require-wails
+.PHONY: help dev run build build-prod build-darwin build-windows build-linux build-windows-amd64 build-macos-amd64 build-macos-arm64 build-linux-amd64 clean install test test-unit test-unit-go test-unit-frontend typecheck test-watch test-integration test-integration-go test-integration-frontend test-coverage test-coverage-go test-coverage-frontend setup setup-quick install-hooks install-frontend install-wails generate doctor fmt lint frontend-dist frontend-dist-placeholder appicon seed-testdb seed-testdb-stop .require-wails
 
 # Ensure Go bin is in PATH
 GOBIN ?= $(shell go env GOPATH 2>/dev/null)/bin
@@ -8,6 +8,11 @@ WAILS_VERSION ?= v2.11.0
 WAILS ?= $(shell command -v wails 2>/dev/null || echo "$(GOBIN)/wails")
 MAGICK ?= $(shell command -v magick 2>/dev/null || command -v convert 2>/dev/null)
 UNAME_S := $(shell uname -s 2>/dev/null || echo "")
+ifeq ($(OS),Windows_NT)
+DETECTED_OS := Windows
+else
+DETECTED_OS := $(UNAME_S)
+endif
 BUILD_TAGS ?= $(shell if [ "$(UNAME_S)" = "Linux" ] && ! pkg-config --exists webkit2gtk-4.0 2>/dev/null && pkg-config --exists webkit2gtk-4.1 2>/dev/null; then echo "webkit2_41"; fi)
 BUILD_TAG_FLAGS := $(if $(strip $(BUILD_TAGS)),-tags "$(BUILD_TAGS)",)
 GIT_COMMIT ?= $(shell git rev-parse HEAD 2>/dev/null || echo "")
@@ -39,6 +44,7 @@ help:
 	@echo ""
 	@echo "Development:"
 	@echo "  dev            Start development server with hot-reload"
+	@echo "  run            Build and launch the application"
 	@echo "  generate       Generate Wails bindings"
 	@echo "  doctor         Run Wails doctor to verify setup"
 	@echo ""
@@ -147,6 +153,37 @@ build/appicon.png: build/appicon.svg
 # Build for current platform
 build: .require-wails appicon generate
 	$(WAILS) build $(BUILD_TAG_FLAGS) -ldflags "$(VERSION_LDFLAGS)"
+
+# Build and launch the current platform executable.
+run: build
+ifeq ($(DETECTED_OS),Windows)
+	@if [ -x build/bin/MongoPal.exe ]; then \
+		./build/bin/MongoPal.exe; \
+	elif [ -x build/bin/mongopal.exe ]; then \
+		./build/bin/mongopal.exe; \
+	else \
+		echo "Built executable not found in build/bin"; \
+		exit 1; \
+	fi
+else ifeq ($(DETECTED_OS),Darwin)
+	@if [ -d build/bin/MongoPal.app ]; then \
+		open build/bin/MongoPal.app; \
+	elif [ -d build/bin/mongopal.app ]; then \
+		open build/bin/mongopal.app; \
+	else \
+		echo "Built app bundle not found in build/bin"; \
+		exit 1; \
+	fi
+else
+	@if [ -x build/bin/MongoPal ]; then \
+		./build/bin/MongoPal; \
+	elif [ -x build/bin/mongopal ]; then \
+		./build/bin/mongopal; \
+	else \
+		echo "Built executable not found in build/bin"; \
+		exit 1; \
+	fi
+endif
 
 # Build for production (optimized)
 build-prod: .require-wails appicon generate

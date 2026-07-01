@@ -187,21 +187,21 @@ describe('formatValue', () => {
     const numValue: ExtendedJsonNumberLong = { $numberLong: '9223372036854775807' }
     const result = formatValue(numValue)
     expect(result.type).toBe('numberLong')
-    expect(result.display).toBe('9223372036854775807')
+    expect(result.display).toBe('NumberLong("9223372036854775807")')
   })
 
   it('handles $numberInt', () => {
     const numValue: ExtendedJsonNumberInt = { $numberInt: '42' }
     const result = formatValue(numValue)
     expect(result.type).toBe('numberInt')
-    expect(result.display).toBe('42')
+    expect(result.display).toBe('NumberInt(42)')
   })
 
   it('handles $numberDouble', () => {
     const numValue: ExtendedJsonNumberDouble = { $numberDouble: '3.14' }
     const result = formatValue(numValue)
     expect(result.type).toBe('numberDouble')
-    expect(result.display).toBe('3.14')
+    expect(result.display).toBe('NumberDouble("3.14")')
   })
 
   it('handles $binary', () => {
@@ -278,9 +278,14 @@ describe('getRawValue', () => {
     expect(getRawValue(obj)).toBe(JSON.stringify(obj, null, 2))
   })
 
-  it('handles BSON types as JSON', () => {
+  it('handles BSON types in shell-style Extended JSON', () => {
     const bson: ExtendedJsonObjectId = { $oid: '507f1f77bcf86cd799439011' }
-    expect(getRawValue(bson)).toBe(JSON.stringify(bson, null, 2))
+    expect(getRawValue(bson)).toBe('ObjectId("507f1f77bcf86cd799439011")')
+  })
+
+  it('handles $numberInt raw values in shell-style Extended JSON', () => {
+    const bson: ExtendedJsonNumberInt = { $numberInt: '3' }
+    expect(getRawValue({ ClusterSize: bson })).toBe('{\n  "ClusterSize": NumberInt(3)\n}')
   })
 })
 

@@ -64,7 +64,7 @@ function readRegexLiteral(input: string, startIndex: number): { pattern: string;
 /**
  * Convert mongosh constructor calls to Extended JSON equivalents.
  * Handles: ObjectId(), ISODate(), new Date(), NumberInt(), NumberLong(),
- * NumberDecimal(), UUID(), Timestamp().
+ * NumberDouble(), NumberDecimal(), UUID(), Timestamp(), MinKey(), MaxKey().
  * Only converts outside of quoted strings.
  */
 export function convertMongoshConstructors(input: string): string {
@@ -110,7 +110,7 @@ export function convertMongoshConstructors(input: string): string {
     }
 
     // Try to match constructor patterns: Name(...)
-    const constructorMatch = input.slice(i).match(/^(ObjectId|ISODate|NumberInt|NumberLong|NumberDecimal|UUID|Timestamp)\s*\(/)
+    const constructorMatch = input.slice(i).match(/^(ObjectId|ISODate|NumberInt|NumberLong|NumberDouble|NumberDecimal|UUID|Timestamp|MinKey|MaxKey)\s*\(/)
     if (constructorMatch) {
       const name = constructorMatch[1]
       const parenStart = i + constructorMatch[0].length - 1
@@ -252,6 +252,8 @@ function mongoshToExtendedJson(name: string, rawArg: string): string | null {
       return '{"$numberInt": "' + arg + '"}'
     case 'NumberLong':
       return '{"$numberLong": "' + arg + '"}'
+    case 'NumberDouble':
+      return '{"$numberDouble": "' + arg + '"}'
     case 'NumberDecimal':
       return '{"$numberDecimal": "' + arg + '"}'
     case 'UUID':
@@ -264,6 +266,10 @@ function mongoshToExtendedJson(name: string, rawArg: string): string | null {
       }
       return null
     }
+    case 'MinKey':
+      return '{"$minKey": 1}'
+    case 'MaxKey':
+      return '{"$maxKey": 1}'
     default:
       return null
   }

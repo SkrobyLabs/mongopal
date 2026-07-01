@@ -8,6 +8,8 @@ import { useTab, type Tab } from './contexts/TabContext'
 import ConfirmDialog from './ConfirmDialog'
 import MonacoErrorBoundary from './MonacoErrorBoundary'
 import { getErrorSummary } from '../utils/errorParser'
+import { shellToJson } from '../utils/queryParser'
+import { stringifyExtendedJsonShell } from '../utils/ejsonShell'
 
 // =============================================================================
 // Type Definitions
@@ -139,15 +141,15 @@ function sortObjectKeys(obj: unknown): unknown {
  */
 function sortJsonString(jsonStr: string): string {
   try {
-    const parsed = JSON.parse(jsonStr) as unknown
-    return JSON.stringify(sortObjectKeys(parsed), null, 2)
+    const parsed = parseDocumentText(jsonStr)
+    return stringifyExtendedJsonShell(sortObjectKeys(parsed), 2)
   } catch {
     return jsonStr
   }
 }
 
 function canonicalizeJsonDocument(jsonStr: string): string {
-  const parsed = JSON.parse(jsonStr) as unknown
+  const parsed = parseDocumentText(jsonStr)
   return JSON.stringify(sortObjectKeys(parsed))
 }
 
@@ -158,8 +160,22 @@ function canonicalizeDocumentId(id: unknown): string {
   return JSON.stringify(sortObjectKeys(id))
 }
 
+function parseDocumentText(documentText: string): unknown {
+  return JSON.parse(shellToJson(documentText)) as unknown
+}
+
+function normalizeDocumentForBackend(documentText: string): string {
+  const json = shellToJson(documentText)
+  JSON.parse(json)
+  return json
+}
+
+function formatDocumentForEditor(document: unknown): string {
+  return stringifyExtendedJsonShell(document, 2)
+}
+
 function getDocumentIdChange(originalJson: string, currentDoc: Record<string, unknown>): boolean {
-  const originalDoc = JSON.parse(originalJson) as Record<string, unknown>
+  const originalDoc = parseDocumentText(originalJson) as Record<string, unknown>
   const originalHasId = hasOwn(originalDoc, '_id')
   const currentHasId = hasOwn(currentDoc, '_id')
 
@@ -174,8 +190,8 @@ function getDocumentIdChange(originalJson: string, currentDoc: Record<string, un
 }
 
 function restoreOriginalDocumentId(originalJson: string, currentJson: string): string {
-  const originalDoc = JSON.parse(originalJson) as Record<string, unknown>
-  const currentDoc = JSON.parse(currentJson) as Record<string, unknown>
+  const originalDoc = parseDocumentText(originalJson) as Record<string, unknown>
+  const currentDoc = parseDocumentText(currentJson) as Record<string, unknown>
 
   if (hasOwn(originalDoc, '_id')) {
     currentDoc._id = originalDoc._id
@@ -183,7 +199,7 @@ function restoreOriginalDocumentId(originalJson: string, currentJson: string): s
     delete currentDoc._id
   }
 
-  return JSON.stringify(sortObjectKeys(currentDoc), null, 2)
+  return formatDocumentForEditor(sortObjectKeys(currentDoc))
 }
 
 /**
@@ -193,8 +209,8 @@ function restoreOriginalDocumentId(originalJson: string, currentJson: string): s
  */
 export function computeDiffSummary(oldContent: unknown, newContent: unknown): string {
   try {
-    const oldDoc = typeof oldContent === 'string' ? JSON.parse(oldContent) as Record<string, unknown> : oldContent as Record<string, unknown>
-    const newDoc = typeof newContent === 'string' ? JSON.parse(newContent) as Record<string, unknown> : newContent as Record<string, unknown>
+    const oldDoc = typeof oldContent === 'string' ? parseDocumentText(oldContent) as Record<string, unknown> : oldContent as Record<string, unknown>
+    const newDoc = typeof newContent === 'string' ? parseDocumentText(newContent) as Record<string, unknown> : newContent as Record<string, unknown>
 
     const added: string[] = []
     const removed: string[] = []
@@ -533,7 +549,7 @@ export default function DocumentEditView({
     try {
       const jsonStr = await go.GetDocument(connectionId, database, collection, documentId)
       const doc = JSON.parse(jsonStr) as Record<string, unknown>
-      setLastKnownDbContent(JSON.stringify(doc, null, 2))
+      setLastKnownDbContent(formatDocumentForEditor(doc))
       setLoadedDocument(doc)
       // Store in tab context so it persists across tab switches
       if (updateTabDocument && tabId) updateTabDocument(tabId, doc)
@@ -570,7 +586,7 @@ export default function DocumentEditView({
         baselineSetRef.current = true
       }
     } else if (effectiveDocument) {
-      const formatted = JSON.stringify(effectiveDocument, null, 2)
+      const formatted = formatDocumentForEditor(effectiveDocument)
       setContent(formatted)
       setOriginalContent(formatted)
       setLastKnownDbContent(formatted)
@@ -643,10 +659,11 @@ export default function DocumentEditView({
         addToHistory(originalContent)
       }
       setHasSavedOnce(true)
-      setContent(contentToSave)
-      editorRef.current?.setValue(contentToSave)
-      setOriginalContent(contentToSave)
-      setLastKnownDbContent(contentToSave)
+      const editorContent = formatDocumentForEditor(JSON.parse(contentToSave) as unknown)
+      setContent(editorContent)
+      editorRef.current?.setValue(editorContent)
+      setOriginalContent(editorContent)
+      setLastKnownDbContent(editorContent)
       setHasChanges(false)
       setSaved(true)
       setTimeout(() => setSaved(false), 1500)
@@ -694,7 +711,7 @@ export default function DocumentEditView({
     }
 
     const jsonStr = await go.GetDocument(connectionId, database, collection, documentId)
-    return JSON.stringify(JSON.parse(jsonStr), null, 2)
+    return formatDocumentForEditor(JSON.parse(jsonStr) as unknown)
   }
 
   const isNotFoundError = (err: unknown): boolean => {
@@ -731,33 +748,32 @@ export default function DocumentEditView({
     let parsedDoc: Record<string, unknown>
 
     try {
-      parsedDoc = JSON.parse(currentContent) as Record<string, unknown>
+      const contentToSave = normalizeDocumentForBackend(currentContent)
+      parsedDoc = JSON.parse(contentToSave) as Record<string, unknown>
+      if (!isInsertMode && originalContent && getDocumentIdChange(originalContent, parsedDoc)) {
+        setPendingIdChangeContent(currentContent)
+        return
+      }
+
+      await saveWithConflictCheck(contentToSave)
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err)
       notify.error(`Invalid JSON: ${errorMsg}`)
       return
     }
-
-    if (!isInsertMode && originalContent && getDocumentIdChange(originalContent, parsedDoc)) {
-      setPendingIdChangeContent(currentContent)
-      return
-    }
-
-    await saveWithConflictCheck(currentContent)
   }
 
   const handleInsert = async (): Promise<void> => {
     const currentContent = editorRef.current?.getValue() || content
 
     try {
-      JSON.parse(currentContent)
+      const contentToInsert = normalizeDocumentForBackend(currentContent)
+      await performInsert(contentToInsert)
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err)
       notify.error(`Invalid JSON: ${errorMsg}`)
       return
     }
-
-    await performInsert(currentContent)
   }
 
   const cancelIdChangeSave = (): void => {
@@ -769,13 +785,13 @@ export default function DocumentEditView({
 
     const restoredContent = restoreOriginalDocumentId(originalContent, pendingIdChangeContent)
     setPendingIdChangeContent(null)
-    await saveWithConflictCheck(restoredContent)
+    await saveWithConflictCheck(normalizeDocumentForBackend(restoredContent))
   }
 
   const insertChangedIdAsNew = async (): Promise<void> => {
     if (!pendingIdChangeContent) return
 
-    const contentToInsert = pendingIdChangeContent
+    const contentToInsert = normalizeDocumentForBackend(pendingIdChangeContent)
     setPendingIdChangeContent(null)
     await performInsert(contentToInsert)
   }
@@ -810,8 +826,8 @@ export default function DocumentEditView({
   const handleFormat = (): void => {
     const currentContent = editorRef.current?.getValue() || content
     try {
-      const parsed = JSON.parse(currentContent) as unknown
-      const formatted = JSON.stringify(parsed, null, 2)
+      const parsed = parseDocumentText(currentContent)
+      const formatted = formatDocumentForEditor(parsed)
       setContent(formatted)
       editorRef.current?.setValue(formatted)
     } catch {
@@ -825,7 +841,7 @@ export default function DocumentEditView({
     try {
       if (go?.GetDocument && documentId) {
         const jsonStr = await go.GetDocument(connectionId, database, collection, documentId)
-        const formatted = JSON.stringify(JSON.parse(jsonStr), null, 2)
+        const formatted = formatDocumentForEditor(JSON.parse(jsonStr) as unknown)
         setContent(formatted)
         setOriginalContent(formatted)
         setLastKnownDbContent(formatted)
@@ -1050,7 +1066,7 @@ export default function DocumentEditView({
                           key={`diff-${previewHistoryIndex}-${historyDiffSideBySide}`}
                           original={sortJsonString(previewEntry.content)}
                           modified={sortJsonString(content)}
-                          language="json"
+                          language="javascript"
                           renderSideBySide={historyDiffSideBySide}
                         />
                       </div>
@@ -1165,7 +1181,7 @@ export default function DocumentEditView({
           <MonacoErrorBoundary value={content} onChange={(value: string) => setContent(value || '')} readOnly={(isInsertMode && saving) || isViewMode}>
             <Editor
               height="100%"
-              language="json"
+              language="javascript"
               theme="mongopal-dark"
               value={content}
               onChange={(value: string | undefined) => { if (!isViewMode) setContent(value || '') }}

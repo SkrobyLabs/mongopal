@@ -112,6 +112,10 @@ describe('shellToJson', () => {
     expect(shellToJson('{big: NumberLong(9999999999)}')).toBe('{"big": {"$numberLong": "9999999999"}}')
   })
 
+  it('converts NumberDouble() to $numberDouble', () => {
+    expect(shellToJson('{value: NumberDouble("3.14")}')).toBe('{"value": {"$numberDouble": "3.14"}}')
+  })
+
   it('converts NumberDecimal() to $numberDecimal', () => {
     expect(shellToJson('{price: NumberDecimal("1.5")}')).toBe('{"price": {"$numberDecimal": "1.5"}}')
   })
@@ -122,6 +126,10 @@ describe('shellToJson', () => {
 
   it('converts Timestamp() to $timestamp', () => {
     expect(shellToJson('{ts: Timestamp(1234, 1)}')).toBe('{"ts": {"$timestamp": {"t": 1234, "i": 1}}}')
+  })
+
+  it('converts MinKey() and MaxKey()', () => {
+    expect(shellToJson('{min: MinKey(), max: MaxKey()}')).toBe('{"min": {"$minKey": 1}, "max": {"$maxKey": 1}}')
   })
 
   it('does not convert constructors inside strings', () => {

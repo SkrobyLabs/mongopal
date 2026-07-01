@@ -193,6 +193,21 @@ describe('DocumentEditView', () => {
       expect(screen.getByTestId('mock-editor')).toBeInTheDocument()
     })
 
+    it('renders Extended JSON number wrappers in shell style', () => {
+      render(
+        <AllProviders>
+          <DocumentEditView
+            {...defaultProps}
+            document={{ _id: 'doc123', ClusterSize: { $numberInt: '3' } }}
+          />
+        </AllProviders>
+      )
+
+      expect(screen.getByTestId('mock-editor')).toHaveValue(
+        '{\n  "_id": "doc123",\n  "ClusterSize": NumberInt(3)\n}'
+      )
+    })
+
     it('displays database, collection, and document ID in header', () => {
       render(
         <AllProviders>
@@ -368,6 +383,24 @@ describe('DocumentEditView', () => {
         '{"_id": "doc123", "name": "Updated User", "age": 25}'
       )
       expect(mockGo.InsertDocument).not.toHaveBeenCalled()
+    })
+
+    it('normalizes shell-style NumberInt before saving', async () => {
+      const originalDocument = { _id: 'doc123', ClusterSize: { $numberInt: '3' } }
+      mockGo.GetDocument.mockResolvedValue(JSON.stringify(originalDocument))
+      renderEditor({ document: originalDocument })
+
+      await changeEditor('{\n  "_id": "doc123",\n  "ClusterSize": NumberInt(4)\n}')
+      await clickSave()
+
+      expect(mockGo.UpdateDocument).toHaveBeenCalledTimes(1)
+      expect(JSON.parse(mockGo.UpdateDocument.mock.calls[0][4] as string)).toEqual({
+        _id: 'doc123',
+        ClusterSize: { $numberInt: '4' },
+      })
+      expect(screen.getByTestId('mock-editor')).toHaveValue(
+        '{\n  "_id": "doc123",\n  "ClusterSize": NumberInt(4)\n}'
+      )
     })
 
     it('blocks normal save and shows choices when _id changes', async () => {
