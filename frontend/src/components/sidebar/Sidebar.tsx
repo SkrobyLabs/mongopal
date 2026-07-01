@@ -20,6 +20,7 @@ import type {
   NodeAction,
   DbSortMode,
   SidebarContextValue,
+  SidebarSelectionItem,
 } from './types'
 import { go } from './types'
 import { SidebarProvider } from './SidebarContext'
@@ -61,6 +62,7 @@ export default function Sidebar({
     disconnect,
     disconnectAll,
     disconnectOthers,
+    deleteConnection,
     setSelectedConnection,
     setSelectedDatabase,
     setSelectedCollection,
@@ -95,7 +97,8 @@ export default function Sidebar({
   const [newFolderName, setNewFolderName] = useState('')
   const [renamingFolderId, setRenamingFolderId] = useState<string | null>(null)
   const [renameFolderValue, setRenameFolderValue] = useState('')
-  const [selectedItem, setSelectedItem] = useState<string | null>(null)
+  const [selectedItems, setSelectedItems] = useState<SidebarSelectionItem[]>([])
+  const [lastSelectedItemId, setLastSelectedItemId] = useState<string | null>(null)
   const [isDisconnectingAll, setIsDisconnectingAll] = useState(false)
   const [draggingConnectionId, setDraggingConnectionId] = useState<string | null>(null)
   const [draggingFolderId, setDraggingFolderId] = useState<string | null>(null)
@@ -119,6 +122,7 @@ export default function Sidebar({
   const lastAccessedDbNodeRef = useRef<string | null>(null)
 
   const [collectionsMap, setCollectionsMap] = useState<Record<string, CollectionInfo[]>>({})
+  const selectedItemIds = useMemo(() => new Set(selectedItems.map(item => item.id)), [selectedItems])
 
   const folderHelpers = useMemo((): FolderHelpers => {
     const sortFolders = (folderList: Folder[]): Folder[] =>
@@ -408,12 +412,13 @@ export default function Sidebar({
         })
 
         sortedDatabases.forEach((db, dbIndex) => {
-          addDatabase(conn.id, db, dbIndex, sortedDatabases.length, connNodeId)
+          addDatabase(conn, db, dbIndex, sortedDatabases.length, connNodeId)
         })
       }
     }
 
-    const addDatabase = (connId: string, db: DatabaseInfoWithAccess, _index: number, _totalDbs: number, parentId: string): void => {
+    const addDatabase = (conn: ExtendedSavedConnection, db: DatabaseInfoWithAccess, _index: number, _totalDbs: number, parentId: string): void => {
+      const connId = conn.id
       const dbNodeId = `db:${connId}:${db.name}`
       const dbExpandKey = `${connId}:${db.name}`
       const isExpanded = expandedDatabases[dbExpandKey]
@@ -424,6 +429,7 @@ export default function Sidebar({
         id: dbNodeId,
         type: 'database',
         connectionId: connId,
+        connectionName: conn.name,
         databaseName: db.name,
         hasChildren: hasCollections || true,
         expanded: isExpanded ?? false,
@@ -437,6 +443,7 @@ export default function Sidebar({
             id: collNodeId,
             type: 'collection',
             connectionId: connId,
+            connectionName: conn.name,
             databaseName: db.name,
             collectionName: coll.name,
             hasChildren: false,
@@ -537,6 +544,123 @@ export default function Sidebar({
   const toggleFolder = (folderId: string): void => {
     setExpandedFolders(prev => ({ ...prev, [folderId]: !prev[folderId] }))
   }
+
+  const toSelectionItem = useCallback((node: VisibleNode): SidebarSelectionItem | null => {
+    if (node.type === 'connection' && node.connectionId) {
+      const conn = connections.find(c => c.id === node.connectionId) as ExtendedSavedConnection | undefined
+      return {
+        id: node.id,
+        type: 'connection',
+        connectionId: node.connectionId,
+        connectionName: node.connectionName || conn?.name,
+        readOnly: conn?.readOnly,
+      }
+    }
+
+    if (node.type === 'database' && node.connectionId && node.databaseName) {
+      const conn = connections.find(c => c.id === node.connectionId) as ExtendedSavedConnection | undefined
+      return {
+        id: node.id,
+        type: 'database',
+        connectionId: node.connectionId,
+        connectionName: node.connectionName || conn?.name,
+        databaseName: node.databaseName,
+        readOnly: conn?.readOnly,
+      }
+    }
+
+    if (node.type === 'collection' && node.connectionId && node.databaseName && node.collectionName) {
+      const conn = connections.find(c => c.id === node.connectionId) as ExtendedSavedConnection | undefined
+      return {
+        id: node.id,
+        type: 'collection',
+        connectionId: node.connectionId,
+        connectionName: node.connectionName || conn?.name,
+        databaseName: node.databaseName,
+        collectionName: node.collectionName,
+        readOnly: conn?.readOnly,
+      }
+    }
+
+    return null
+  }, [connections])
+
+  const applyPrimarySelection = useCallback((item: SidebarSelectionItem): void => {
+    setSelectedConnection(item.connectionId)
+    setSelectedDatabase(item.databaseName ?? null)
+    setSelectedCollection(item.collectionName ?? null)
+  }, [setSelectedConnection, setSelectedDatabase, setSelectedCollection])
+
+  const handleSelectItem = useCallback((item: SidebarSelectionItem, event: React.MouseEvent): void => {
+    const selectedType = selectedItems[0]?.type
+    const isToggleSelection = event.altKey || event.metaKey
+
+    if (event.shiftKey && lastSelectedItemId) {
+      const start = visibleNodes.findIndex(node => node.id === lastSelectedItemId)
+      const end = visibleNodes.findIndex(node => node.id === item.id)
+      const lastItem = start >= 0 ? toSelectionItem(visibleNodes[start]) : null
+
+      if (start >= 0 && end >= 0 && lastItem?.type === item.type) {
+        const [from, to] = start < end ? [start, end] : [end, start]
+        const rangeItems = visibleNodes
+          .slice(from, to + 1)
+          .map(toSelectionItem)
+          .filter((rangeItem): rangeItem is SidebarSelectionItem => rangeItem?.type === item.type)
+
+        setSelectedItems(rangeItems)
+        applyPrimarySelection(item)
+        return
+      }
+    }
+
+    if (isToggleSelection) {
+      if (selectedType && selectedType !== item.type) {
+        setSelectedItems([item])
+        setLastSelectedItemId(item.id)
+        applyPrimarySelection(item)
+        return
+      }
+
+      const exists = selectedItems.some(selected => selected.id === item.id)
+      const next = exists
+        ? selectedItems.filter(selected => selected.id !== item.id)
+        : [...selectedItems, item]
+
+      setSelectedItems(next)
+      if (exists) {
+        if (next.length === 0) {
+          setLastSelectedItemId(null)
+          setSelectedConnection(null)
+          setSelectedDatabase(null)
+          setSelectedCollection(null)
+        }
+      } else {
+        setLastSelectedItemId(item.id)
+        applyPrimarySelection(item)
+      }
+      return
+    }
+
+    setSelectedItems([item])
+    setLastSelectedItemId(item.id)
+    applyPrimarySelection(item)
+  }, [
+    selectedItems,
+    lastSelectedItemId,
+    visibleNodes,
+    toSelectionItem,
+    applyPrimarySelection,
+    setSelectedConnection,
+    setSelectedDatabase,
+    setSelectedCollection,
+  ])
+
+  const getContextSelection = useCallback((item: SidebarSelectionItem): SidebarSelectionItem[] => {
+    if (selectedItems.length > 1 && selectedItems.some(selected => selected.id === item.id)) {
+      return selectedItems
+    }
+    return [item]
+  }, [selectedItems])
 
   const handleCreateFolder = async (parentId = ''): Promise<void> => {
     if (!newFolderName.trim()) return
@@ -722,7 +846,8 @@ export default function Sidebar({
       setCollectionsMap({})
       setExpandedConnections({})
       setExpandedDatabases({})
-      setSelectedItem(null)
+      setSelectedItems([])
+      setLastSelectedItemId(null)
       setFocusedNodeId(null)
       setSelectedConnection(null)
       setSelectedDatabase(null)
@@ -799,8 +924,157 @@ export default function Sidebar({
     })
   }
 
+  const clearSelectedItems = (): void => {
+    setSelectedItems([])
+    setLastSelectedItemId(null)
+  }
+
+  const compactSelectionLabel = (items: SidebarSelectionItem[], getName: (item: SidebarSelectionItem) => string | undefined): string => {
+    const names = items.map(getName).filter((name): name is string => Boolean(name))
+    if (names.length <= 3) return names.map(name => `"${name}"`).join(', ')
+    return `${names.slice(0, 3).map(name => `"${name}"`).join(', ')} and ${names.length - 3} more`
+  }
+
+  const handleConnectConnections = (items: SidebarSelectionItem[]): void => {
+    items
+      .filter(item => !activeConnections.includes(item.connectionId))
+      .forEach(item => {
+        connect(item.connectionId)
+      })
+  }
+
+  const handleDisconnectConnections = (items: SidebarSelectionItem[]): void => {
+    items
+      .filter(item => activeConnections.includes(item.connectionId))
+      .forEach(item => {
+        disconnect(item.connectionId, closeTabsForConnection)
+      })
+  }
+
+  const handleRefreshConnections = (items: SidebarSelectionItem[]): void => {
+    items.forEach(item => {
+      refreshConnection(item.connectionId)
+    })
+  }
+
+  const handleDeleteConnections = (items: SidebarSelectionItem[]): void => {
+    const uniqueItems = Array.from(new Map(items.map(item => [item.connectionId, item])).values())
+    setConfirmDialog({
+      title: `Delete ${uniqueItems.length} Connections?`,
+      message: `Delete ${compactSelectionLabel(uniqueItems, item => item.connectionName)}?\n\nThis action cannot be undone.`,
+      confirmText: 'Delete Connections',
+      confirmStyle: 'danger',
+      onConfirm: async () => {
+        try {
+          for (const item of uniqueItems) {
+            if (activeConnections.includes(item.connectionId)) {
+              await disconnect(item.connectionId, closeTabsForConnection)
+            }
+            await deleteConnection(item.connectionId)
+          }
+          clearSelectedItems()
+          setConfirmDialog(null)
+        } catch (err) {
+          notify.error(getErrorSummary(err instanceof Error ? err.message : String(err)))
+        }
+      },
+    })
+  }
+
+  const handleDropDatabases = (items: SidebarSelectionItem[]): void => {
+    const targets = items.filter(item => item.databaseName)
+    setConfirmDialog({
+      title: `Drop ${targets.length} Databases?`,
+      message: `This will permanently delete ${compactSelectionLabel(targets, item => item.databaseName)} and ALL their collections. This action cannot be undone.`,
+      confirmText: 'Drop Databases',
+      confirmStyle: 'danger',
+      onConfirm: async () => {
+        try {
+          for (const item of targets) {
+            await dropDatabase(item.connectionId, item.databaseName!)
+            closeTabsForDatabase(item.connectionId, item.databaseName!)
+          }
+
+          setDatabases(prev => {
+            const next = { ...prev }
+            targets.forEach(item => {
+              next[item.connectionId] = (next[item.connectionId] || []).filter(db => db.name !== item.databaseName)
+            })
+            return next
+          })
+          setCollectionsMap(prev => {
+            const next = { ...prev }
+            targets.forEach(item => {
+              delete next[`${item.connectionId}:${item.databaseName}`]
+            })
+            return next
+          })
+          clearSelectedItems()
+          notify.success(`${targets.length} database${targets.length !== 1 ? 's' : ''} dropped`)
+          setConfirmDialog(null)
+        } catch (err) {
+          notify.error(getErrorSummary(err instanceof Error ? err.message : String(err)))
+        }
+      },
+    })
+  }
+
+  const handleDropCollections = (items: SidebarSelectionItem[]): void => {
+    const targets = items.filter(item => item.databaseName && item.collectionName)
+    setConfirmDialog({
+      title: `Drop ${targets.length} Collections?`,
+      message: `This will permanently delete ${compactSelectionLabel(targets, item => item.collectionName)} and ALL their documents. This action cannot be undone.`,
+      confirmText: 'Drop Collections',
+      confirmStyle: 'danger',
+      onConfirm: async () => {
+        try {
+          for (const item of targets) {
+            await dropCollection(item.connectionId, item.databaseName!, item.collectionName!)
+            closeTabsForCollection(item.connectionId, item.databaseName!, item.collectionName!)
+          }
+
+          setCollectionsMap(prev => {
+            const next = { ...prev }
+            targets.forEach(item => {
+              const key = `${item.connectionId}:${item.databaseName}`
+              next[key] = (next[key] || []).filter(coll => coll.name !== item.collectionName)
+            })
+            return next
+          })
+          clearSelectedItems()
+          notify.success(`${targets.length} collection${targets.length !== 1 ? 's' : ''} dropped`)
+          setConfirmDialog(null)
+        } catch (err) {
+          notify.error(getErrorSummary(err instanceof Error ? err.message : String(err)))
+        }
+      },
+    })
+  }
+
+  const handleClearCollections = (items: SidebarSelectionItem[]): void => {
+    const targets = items.filter(item => item.databaseName && item.collectionName)
+    setConfirmDialog({
+      title: `Clear ${targets.length} Collections?`,
+      message: `This will delete ALL documents in ${compactSelectionLabel(targets, item => item.collectionName)}. The collection structures will be preserved. This action cannot be undone.`,
+      confirmText: 'Clear Collections',
+      confirmStyle: 'danger',
+      onConfirm: async () => {
+        try {
+          for (const item of targets) {
+            await clearCollection(item.connectionId, item.databaseName!, item.collectionName!)
+          }
+          notify.success(`${targets.length} collection${targets.length !== 1 ? 's' : ''} cleared`)
+          setConfirmDialog(null)
+        } catch (err) {
+          notify.error(getErrorSummary(err instanceof Error ? err.message : String(err)))
+        }
+      },
+    })
+  }
+
   const handleSelectCollection = (connId: string, dbName: string, collName: string): void => {
-    setSelectedItem(`${connId}:${dbName}:${collName}`)
+    setSelectedConnection(connId)
+    setSelectedDatabase(dbName)
     setSelectedCollection(collName)
   }
 
@@ -812,7 +1086,10 @@ export default function Sidebar({
   // Build the context value for SidebarProvider
   const sidebarContextValue = useMemo((): SidebarContextValue => ({
     searchQuery,
-    selectedItem,
+    selectedItems,
+    selectedItemIds,
+    onSelectItem: handleSelectItem,
+    getContextSelection,
     favorites,
     databaseFavorites,
     onToggleFavorite: handleToggleFavorite,
@@ -824,11 +1101,16 @@ export default function Sidebar({
     setExpandedConnections,
     expandedDatabases,
     setExpandedDatabases,
+    collectionsMap,
     onShowContextMenu: showContextMenu,
     onConnect: connect,
     onDisconnect: handleDisconnect,
     onDisconnectOthers: handleDisconnectOthers,
     activeConnections,
+    onConnectConnections: handleConnectConnections,
+    onDisconnectConnections: handleDisconnectConnections,
+    onRefreshConnections: handleRefreshConnections,
+    onDeleteConnections: handleDeleteConnections,
     onSelectDatabase: setSelectedDatabase,
     onSelectCollection: handleSelectCollection,
     onOpenCollection: handleOpenCollection,
@@ -838,6 +1120,9 @@ export default function Sidebar({
     onDropDatabase: handleDropDatabase,
     onDropCollection: handleDropCollection,
     onClearCollection: handleClearCollection,
+    onDropDatabases: handleDropDatabases,
+    onDropCollections: handleDropCollections,
+    onClearCollections: handleClearCollections,
     onExportDatabases,
     onImportDatabases,
     onExportCollections,
@@ -859,7 +1144,10 @@ export default function Sidebar({
     onError: (msg: string) => notify.error(msg),
   }), [
     searchQuery,
-    selectedItem,
+    selectedItems,
+    selectedItemIds,
+    handleSelectItem,
+    getContextSelection,
     favorites,
     databaseFavorites,
     handleToggleFavorite,
@@ -868,14 +1156,22 @@ export default function Sidebar({
     focusedNodeId,
     expandedConnections,
     expandedDatabases,
+    collectionsMap,
     activeConnections,
     connect,
     handleDisconnect,
     handleDisconnectOthers,
+    handleConnectConnections,
+    handleDisconnectConnections,
+    handleRefreshConnections,
+    handleDeleteConnections,
     setSelectedDatabase,
     openSchemaTab,
     onShowStats,
     onManageIndexes,
+    handleDropDatabases,
+    handleDropCollections,
+    handleClearCollections,
     onExportDatabases,
     onImportDatabases,
     onExportCollections,

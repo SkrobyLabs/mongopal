@@ -205,6 +205,103 @@ describe('Sidebar Search', () => {
     expect(findTreeItemWithText(container, 'Test Environment')).toBe(false)
   })
 
+  it('alt-click multi-selects connections and deselects selected connections', () => {
+    const { container } = render(<Sidebar {...defaultProps} />)
+    const production = getTreeItemWithText(container, 'Production Server')
+    const development = getTreeItemWithText(container, 'Development Server')
+
+    fireEvent.click(production, { altKey: true })
+    fireEvent.click(development, { altKey: true })
+
+    expect(production).toHaveAttribute('data-selected', 'true')
+    expect(development).toHaveAttribute('data-selected', 'true')
+
+    fireEvent.click(production, { altKey: true })
+
+    expect(production).toHaveAttribute('data-selected', 'false')
+    expect(development).toHaveAttribute('data-selected', 'true')
+  })
+
+  it('command-click multi-selects connections on macOS-style input', () => {
+    const { container } = render(<Sidebar {...defaultProps} />)
+    const production = getTreeItemWithText(container, 'Production Server')
+    const development = getTreeItemWithText(container, 'Development Server')
+
+    fireEvent.click(production, { metaKey: true })
+    fireEvent.click(development, { metaKey: true })
+
+    expect(production).toHaveAttribute('data-selected', 'true')
+    expect(development).toHaveAttribute('data-selected', 'true')
+  })
+
+  it('normal click resets multi-selection to a single item', () => {
+    const { container } = render(<Sidebar {...defaultProps} />)
+    const production = getTreeItemWithText(container, 'Production Server')
+    const development = getTreeItemWithText(container, 'Development Server')
+    const test = getTreeItemWithText(container, 'Test Environment')
+
+    fireEvent.click(production, { altKey: true })
+    fireEvent.click(development, { altKey: true })
+    fireEvent.click(test)
+
+    expect(production).toHaveAttribute('data-selected', 'false')
+    expect(development).toHaveAttribute('data-selected', 'false')
+    expect(test).toHaveAttribute('data-selected', 'true')
+  })
+
+  it('shift-click selects a same-type range from the last selected item', () => {
+    const { container } = render(<Sidebar {...defaultProps} />)
+    const production = getTreeItemWithText(container, 'Production Server')
+    const development = getTreeItemWithText(container, 'Development Server')
+    const test = getTreeItemWithText(container, 'Test Environment')
+
+    fireEvent.click(development)
+    fireEvent.click(test, { shiftKey: true })
+
+    expect(production).toHaveAttribute('data-selected', 'true')
+    expect(development).toHaveAttribute('data-selected', 'true')
+    expect(test).toHaveAttribute('data-selected', 'true')
+  })
+
+  it('does not multi-select different resource types', async () => {
+    const { container } = render(<Sidebar {...defaultProps} />)
+    const production = getTreeItemWithText(container, 'Production Server')
+
+    fireEvent.doubleClick(production)
+
+    await waitFor(() => {
+      expect(findTreeItemWithText(container, 'myapp_production')).toBe(true)
+    })
+
+    const database = getTreeItemWithText(container, 'myapp_production')
+    fireEvent.click(production, { altKey: true })
+    fireEvent.click(database, { altKey: true })
+
+    expect(production).toHaveAttribute('data-selected', 'false')
+    expect(database).toHaveAttribute('data-selected', 'true')
+  })
+
+  it('shows plural database actions when opening context menu on a selected database group', async () => {
+    const { container } = render(<Sidebar {...defaultProps} />)
+    const production = getTreeItemWithText(container, 'Production Server')
+
+    fireEvent.doubleClick(production)
+
+    await waitFor(() => {
+      expect(findTreeItemWithText(container, 'myapp_production')).toBe(true)
+    })
+
+    const productionDb = getTreeItemWithText(container, 'myapp_production')
+    const stagingDb = getTreeItemWithText(container, 'myapp_staging')
+    fireEvent.click(productionDb, { altKey: true })
+    fireEvent.click(stagingDb, { altKey: true })
+    fireEvent.contextMenu(stagingDb)
+
+    expect(screen.getByText('Drop Databases...')).toBeInTheDocument()
+    expect(screen.queryByText('Drop Database...')).not.toBeInTheDocument()
+    expect(screen.queryByText('Import...')).not.toBeInTheDocument()
+  })
+
   it('shows clear button when search has text', () => {
     render(<Sidebar {...defaultProps} />)
     const searchInput = screen.getByPlaceholderText('Search connections, databases, collections...')
@@ -305,7 +402,7 @@ describe('Sidebar Search', () => {
     expect(mockConnect).toHaveBeenCalledWith('conn2')
   })
 
-  it('does not select or load a database on single click', async () => {
+  it('selects but does not load a database on single click', async () => {
     const { container } = render(<Sidebar {...defaultProps} />)
     const productionServer = getTreeItemWithText(container, 'Production Server')
 
@@ -316,7 +413,7 @@ describe('Sidebar Search', () => {
     vi.clearAllMocks()
     fireEvent.click(productionDatabase)
 
-    expect(mockSetSelectedDatabase).not.toHaveBeenCalled()
+    expect(mockSetSelectedDatabase).toHaveBeenCalledWith('myapp_production')
     expect(window.go?.main?.App?.ListCollections).not.toHaveBeenCalled()
     expect(findTreeItemWithText(container, 'users')).toBe(false)
   })

@@ -8,8 +8,8 @@ import { useSidebarContext } from './SidebarContext'
 import type {
   ConnectionNodeProps,
   ConnectionStatus,
-  DbDataCache,
   ContextMenuItem,
+  SidebarSelectionItem,
 } from './types'
 import { go as goBindings } from './types'
 
@@ -40,7 +40,9 @@ export function ConnectionNode({
   const ctx = useSidebarContext()
   const {
     searchQuery,
-    selectedItem,
+    selectedItemIds,
+    onSelectItem,
+    getContextSelection,
     favorites,
     databaseFavorites,
     onToggleFavorite,
@@ -52,11 +54,16 @@ export function ConnectionNode({
     setExpandedConnections,
     expandedDatabases,
     setExpandedDatabases,
+    collectionsMap,
     onShowContextMenu,
     onConnect,
     onDisconnect,
     onDisconnectOthers,
     activeConnections,
+    onConnectConnections,
+    onDisconnectConnections,
+    onRefreshConnections,
+    onDeleteConnections,
     onSelectDatabase,
     onSelectCollection,
     onOpenCollection,
@@ -66,6 +73,9 @@ export function ConnectionNode({
     onDropDatabase,
     onDropCollection,
     onClearCollection,
+    onDropDatabases,
+    onDropCollections,
+    onClearCollections,
     onExportDatabases,
     onImportDatabases,
     onExportCollections,
@@ -89,32 +99,20 @@ export function ConnectionNode({
     setExpandedDatabases?.(prev => ({ ...prev, [key]: newValue }))
   }
 
-  const [dbData, setDbData] = useState<DbDataCache>({})
   const [_loading, setLoading] = useState(false)
 
   // Collection export dialog state (for context menu "Export" submenu)
   const [collectionExport, setCollectionExport] = useState<{ db: string; coll: string; format: 'csv' | 'json' } | null>(null)
 
   const removeCollection = (dbName: string, collName: string): void => {
-    setDbData(prev => {
-      const dbEntry = prev[dbName]
-      if (!dbEntry?.collections) return prev
-      return {
-        ...prev,
-        [dbName]: {
-          ...dbEntry,
-          collections: dbEntry.collections.filter(c => c.name !== collName)
-        }
-      }
-    })
+    const key = `${connection.id}:${dbName}`
+    const collections = collectionsMap[key]
+    if (!collections) return
+    onCollectionsLoaded?.(connection.id, dbName, collections.filter(c => c.name !== collName))
   }
 
   const removeDatabase = (dbName: string): void => {
     setDbExpanded(dbName, false)
-    setDbData(prev => {
-      const { [dbName]: _, ...rest } = prev
-      return rest
-    })
   }
 
   useEffect(() => {
@@ -144,13 +142,9 @@ export function ConnectionNode({
 
   const loadCollections = async (dbName: string, forceRefresh = false): Promise<void> => {
     if (!goBindings?.ListCollections) return
-    if (!forceRefresh && dbData[dbName]?.collections) return
+    if (!forceRefresh && collectionsMap[`${connection.id}:${dbName}`]) return
     try {
       const collections = await goBindings.ListCollections(connection.id, dbName)
-      setDbData(prev => ({
-        ...prev,
-        [dbName]: { ...prev[dbName], collections }
-      }))
       onCollectionsLoaded?.(connection.id, dbName, collections)
     } catch (err) {
       console.error('Failed to load collections:', err)
@@ -172,15 +166,123 @@ export function ConnectionNode({
     if (!isConnected) return
     databases.forEach(db => {
       const isExpanded = getDbExpanded(db.name)
-      const hasCollections = dbData[db.name]?.collections
+      const hasCollections = collectionsMap[`${connection.id}:${db.name}`]
       if (isExpanded && !hasCollections) {
         loadCollections(db.name)
       }
     })
-  }, [expandedDatabases, isConnected, databases])
+  }, [expandedDatabases, isConnected, databases, collectionsMap])
+
+  const connectionSelectionItem = (): SidebarSelectionItem => ({
+    id: `conn:${connection.id}`,
+    type: 'connection',
+    connectionId: connection.id,
+    connectionName: connection.name,
+    readOnly: connection.readOnly,
+  })
+
+  const databaseSelectionItem = (dbName: string): SidebarSelectionItem => ({
+    id: `db:${connection.id}:${dbName}`,
+    type: 'database',
+    connectionId: connection.id,
+    connectionName: connection.name,
+    databaseName: dbName,
+    readOnly: connection.readOnly,
+  })
+
+  const collectionSelectionItem = (dbName: string, collName: string): SidebarSelectionItem => ({
+    id: `coll:${connection.id}:${dbName}:${collName}`,
+    type: 'collection',
+    connectionId: connection.id,
+    connectionName: connection.name,
+    databaseName: dbName,
+    collectionName: collName,
+    readOnly: connection.readOnly,
+  })
+
+  const hasReadOnlySelection = (items: SidebarSelectionItem[]): boolean =>
+    items.some(item => item.readOnly)
+
+  const refreshSelectedDatabases = (items: SidebarSelectionItem[]): void => {
+    items.forEach(item => {
+      if (item.databaseName) {
+        goBindings?.ListCollections?.(item.connectionId, item.databaseName).then(collections => {
+          onCollectionsLoaded?.(item.connectionId, item.databaseName!, collections)
+        }).catch(err => {
+          onError?.(`Failed to load collections: ${err instanceof Error ? err.message : String(err)}`)
+        })
+      }
+    })
+  }
+
+  const buildMultiConnectionMenu = (items: SidebarSelectionItem[]): ContextMenuItem[] => {
+    const connectedItems = items.filter(item => activeConnections.includes(item.connectionId))
+    const disconnectedItems = items.filter(item => !activeConnections.includes(item.connectionId))
+
+    const menuItems: ContextMenuItem[] = [
+      { label: 'Refresh Connections', onClick: () => onRefreshConnections(items) },
+    ]
+
+    if (disconnectedItems.length > 0) {
+      menuItems.push({ label: 'Connect Connections', onClick: () => onConnectConnections(disconnectedItems) })
+    }
+    if (connectedItems.length > 0) {
+      menuItems.push({ label: 'Disconnect Connections', onClick: () => onDisconnectConnections(connectedItems) })
+    }
+
+    menuItems.push(
+      { type: 'separator' },
+      { label: 'Delete Connections...', onClick: () => onDeleteConnections(items), danger: true },
+    )
+
+    return menuItems
+  }
+
+  const buildMultiDatabaseMenu = (items: SidebarSelectionItem[]): ContextMenuItem[] => {
+    const menuItems: ContextMenuItem[] = [
+      { label: 'Refresh Collections', onClick: () => refreshSelectedDatabases(items) },
+    ]
+
+    if (!hasReadOnlySelection(items)) {
+      menuItems.push(
+        { type: 'separator' },
+        { label: 'Drop Databases...', onClick: () => onDropDatabases(items), danger: true },
+      )
+    }
+
+    return menuItems
+  }
+
+  const buildMultiCollectionMenu = (items: SidebarSelectionItem[]): ContextMenuItem[] => {
+    const menuItems: ContextMenuItem[] = [
+      { label: 'Open Collections', onClick: () => {
+        items.forEach(item => {
+          if (item.databaseName && item.collectionName) {
+            onOpenCollection(item.connectionId, item.databaseName, item.collectionName)
+          }
+        })
+      }},
+    ]
+
+    if (!hasReadOnlySelection(items)) {
+      menuItems.push(
+        { type: 'separator' },
+        { label: 'Clear Collections...', onClick: () => onClearCollections(items), danger: true },
+        { label: 'Drop Collections...', onClick: () => onDropCollections(items), danger: true },
+      )
+    }
+
+    return menuItems
+  }
 
   const handleContextMenu = (e: React.MouseEvent): void => {
     e.preventDefault()
+    const selection = getContextSelection(connectionSelectionItem())
+    if (selection.length > 1) {
+      onShowContextMenu(e.clientX, e.clientY, buildMultiConnectionMenu(selection))
+      return
+    }
+
     const hasOtherConnections = activeConnections.length > 1
 
     const items: ContextMenuItem[] = isConnected
@@ -222,6 +324,12 @@ export function ConnectionNode({
   const handleDatabaseContextMenu = (e: React.MouseEvent, dbName: string): void => {
     e.preventDefault()
     e.stopPropagation()
+    const selection = getContextSelection(databaseSelectionItem(dbName))
+    if (selection.length > 1) {
+      onShowContextMenu(e.clientX, e.clientY, buildMultiDatabaseMenu(selection))
+      return
+    }
+
     const isReadOnly = connection.readOnly
     const dbFavoriteKey = `db:${connection.id}:${dbName}`
     const isDbFavorite = databaseFavorites?.includes(dbFavoriteKey)
@@ -249,6 +357,12 @@ export function ConnectionNode({
   const handleCollectionContextMenu = (e: React.MouseEvent, dbName: string, collName: string): void => {
     e.preventDefault()
     e.stopPropagation()
+    const selection = getContextSelection(collectionSelectionItem(dbName, collName))
+    if (selection.length > 1) {
+      onShowContextMenu(e.clientX, e.clientY, buildMultiCollectionMenu(selection))
+      return
+    }
+
     const isReadOnly = connection.readOnly
     const favoriteKey = `${connection.id}:${dbName}:${collName}`
     const isFavorite = favorites?.has(favoriteKey)
@@ -345,6 +459,8 @@ export function ConnectionNode({
         }
         setExpanded(!expanded)
       }}
+      selected={selectedItemIds.has(connectionNodeId)}
+      onClick={(e) => onSelectItem(connectionSelectionItem(), e)}
       onContextMenu={handleContextMenu}
       nodeId={connectionNodeId}
       isFocused={focusedNodeId === connectionNodeId}
@@ -379,7 +495,7 @@ export function ConnectionNode({
           })
           .map((db, _dbIndex, _filteredDbs) => {
           const dbNodeId = `db:${connection.id}:${db.name}`
-          const collections = dbData[db.name]?.collections || []
+          const collections = collectionsMap[`${connection.id}:${db.name}`] || []
           const dbMatchesSearch = matchingDatabases.includes(db.name)
           const collectionsMatchingInDb = matchingCollections[db.name] || []
 
@@ -407,6 +523,8 @@ export function ConnectionNode({
                 onSelectDatabase(db.name)
                 toggleDatabase(db.name)
               }}
+              selected={selectedItemIds.has(dbNodeId)}
+              onClick={(e) => onSelectItem(databaseSelectionItem(db.name), e)}
               onContextMenu={(e) => handleDatabaseContextMenu(e, db.name)}
               nodeId={dbNodeId}
               isFocused={focusedNodeId === dbNodeId}
@@ -438,8 +556,13 @@ export function ConnectionNode({
                     color={connection.color}
                     count={coll.count}
                     level={level + 2}
-                    selected={selectedItem === itemKey}
-                    onClick={() => onSelectCollection(connection.id, db.name, coll.name)}
+                    selected={selectedItemIds.has(collNodeId)}
+                    onClick={(e) => {
+                      onSelectItem(collectionSelectionItem(db.name, coll.name), e)
+                      if (!e.altKey && !e.metaKey && !e.shiftKey) {
+                        onSelectCollection(connection.id, db.name, coll.name)
+                      }
+                    }}
                     onDoubleClick={() => onOpenCollection(connection.id, db.name, coll.name)}
                     onContextMenu={(e) => handleCollectionContextMenu(e, db.name, coll.name)}
                     nodeId={collNodeId}

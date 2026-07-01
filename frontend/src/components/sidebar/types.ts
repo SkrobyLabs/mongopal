@@ -47,18 +47,6 @@ export const go: SidebarGoBindings | undefined = window.go?.main?.App as Sidebar
 // =============================================================================
 
 /**
- * Database data cache entry
- */
-export interface DbDataEntry {
-  collections?: CollectionInfo[]
-}
-
-/**
- * Type for database data cache
- */
-export type DbDataCache = Record<string, DbDataEntry>
-
-/**
  * Database sort mode
  */
 export type DbSortMode = 'alpha' | 'lastAccessed'
@@ -102,6 +90,18 @@ export interface VisibleNode {
  * Node action for keyboard navigation
  */
 export type NodeAction = 'expand' | 'collapse' | 'activate'
+
+export type SelectableNodeType = 'connection' | 'database' | 'collection'
+
+export interface SidebarSelectionItem {
+  id: string
+  type: SelectableNodeType
+  connectionId: string
+  connectionName?: string
+  databaseName?: string
+  collectionName?: string
+  readOnly?: boolean
+}
 
 // =============================================================================
 // Context Menu
@@ -262,7 +262,10 @@ export interface SidebarContextValue {
   searchQuery: string
 
   // Selection
-  selectedItem: string | null
+  selectedItems: SidebarSelectionItem[]
+  selectedItemIds: Set<string>
+  onSelectItem: (item: SidebarSelectionItem, event: React.MouseEvent) => void
+  getContextSelection: (item: SidebarSelectionItem) => SidebarSelectionItem[]
 
   // Favorites
   favorites: Set<string>
@@ -282,6 +285,7 @@ export interface SidebarContextValue {
   setExpandedConnections: React.Dispatch<React.SetStateAction<Record<string, boolean>>>
   expandedDatabases: Record<string, boolean>
   setExpandedDatabases: React.Dispatch<React.SetStateAction<Record<string, boolean>>>
+  collectionsMap: Record<string, CollectionInfo[]>
 
   // Context menu
   onShowContextMenu: (x: number, y: number, items: ContextMenuItem[]) => void
@@ -291,6 +295,10 @@ export interface SidebarContextValue {
   onDisconnect: (connId: string) => void
   onDisconnectOthers: (connId: string) => void
   activeConnections: string[]
+  onConnectConnections: (items: SidebarSelectionItem[]) => void
+  onDisconnectConnections: (items: SidebarSelectionItem[]) => void
+  onRefreshConnections: (items: SidebarSelectionItem[]) => void
+  onDeleteConnections: (items: SidebarSelectionItem[]) => void
 
   // Navigation
   onSelectDatabase: (dbName: string) => void
@@ -306,6 +314,9 @@ export interface SidebarContextValue {
   onDropDatabase: (connId: string, dbName: string, removeFromState: (dbName: string) => void) => void
   onDropCollection: (connId: string, dbName: string, collName: string, removeFromState: (dbName: string, collName: string) => void) => void
   onClearCollection: (connId: string, dbName: string, collName: string) => void
+  onDropDatabases: (items: SidebarSelectionItem[]) => void
+  onDropCollections: (items: SidebarSelectionItem[]) => void
+  onClearCollections: (items: SidebarSelectionItem[]) => void
 
   // Export/Import (connId/connName provided by ConnectionNode)
   onExportDatabases?: (connId: string, connName: string) => void
