@@ -31,6 +31,8 @@ import { parseFilterFromQuery, buildFullQuery, isSimpleFindQuery } from '../util
 import { validateQuery, toMonacoMarkers, QueryDiagnostic, MonacoInstance } from '../utils/queryValidator'
 import { validateFilter, fieldWarningsToMonacoDiagnostics, FieldWarning, MonacoDiagnostic } from '../utils/fieldValidator'
 import { createQueryCompletionProvider } from '../utils/queryCompletionProvider'
+import { createSqlCompletionProvider } from '../utils/sqlConverter/sqlCompletionProvider'
+import { convertSQL, ConversionResult } from '../utils/sqlConverter'
 import { useEditorLayout } from '../hooks/useEditorLayout'
 import { useQueryHistory, QueryHistoryItem } from '../hooks/useQueryHistory'
 import { useQueryExecution } from '../hooks/useQueryExecution'
@@ -73,7 +75,7 @@ interface IconProps {
  */
 interface QueryHistoryDropdownProps {
   queryHistory: QueryHistoryItem[]
-  onSelect: (query: string) => void
+  onSelect: (query: string, mode: 'mongo' | 'sql') => void
   onClose: () => void
   historyRef: LegacyRef<HTMLDivElement>
 }
@@ -151,6 +153,24 @@ const SaveIcon = ({ className = 'w-4 h-4' }: IconProps): ReactNode => (
   </svg>
 )
 
+const CopyIcon = ({ className = 'w-4 h-4' }: IconProps): ReactNode => (
+  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+  </svg>
+)
+
+const CopyCheckIcon = ({ className = 'w-4 h-4' }: IconProps): ReactNode => (
+  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+  </svg>
+)
+
+const ChevronIcon = ({ className = 'w-4 h-4' }: IconProps): ReactNode => (
+  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+  </svg>
+)
+
 // =============================================================================
 // QueryHistoryDropdown Component
 // =============================================================================
@@ -212,7 +232,8 @@ function QueryHistoryDropdown({
       case 'Enter':
         e.preventDefault()
         if (highlightedIndex >= 0 && highlightedIndex < filteredHistory.length) {
-          onSelect(filteredHistory[highlightedIndex].query)
+          const item = filteredHistory[highlightedIndex]
+          onSelect(item.query, item.mode ?? 'mongo')
           onClose()
         }
         break
@@ -259,13 +280,18 @@ function QueryHistoryDropdown({
                 idx === highlightedIndex ? 'bg-surface-active' : 'hover:bg-surface-hover'
               }`}
               onClick={() => {
-                onSelect(item.query)
+                onSelect(item.query, item.mode ?? 'mongo')
                 onClose()
               }}
               onMouseEnter={() => setHighlightedIndex(idx)}
             >
               <div className="font-mono text-sm text-text-light truncate">{item.query}</div>
-              <div className="text-xs text-text-dim">{item.collection}</div>
+              <div className="text-xs text-text-dim flex items-center gap-1.5">
+                <span>{item.collection}</span>
+                {item.mode === 'sql' && (
+                  <span className="px-1 py-0.5 rounded bg-surface-active text-[10px] uppercase tracking-wide">SQL</span>
+                )}
+              </div>
             </button>
           ))
         )}
@@ -318,13 +344,16 @@ export default function CollectionView({
 
   const { editorHeight, resizerProps } = useEditorLayout({ storageKey: 'mongopal_editor_height' })
 
+  // Active editor buffer for the current mode (F076).
+  const activeQueryText = queryExec.queryMode === 'sql' ? queryExec.sqlQuery : queryExec.query
+
   const bulkActions = useBulkActions({
     connectionId,
     database,
     collection,
     documents: queryExec.documents,
     onRefresh: queryExec.executeQuery,
-    query: queryExec.query,
+    query: activeQueryText,
     skip: queryExec.skip,
     limit: queryExec.limit,
   })
@@ -340,6 +369,24 @@ export default function CollectionView({
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const fullMonacoRef = useRef<any>(null)
   const completionDisposableRef = useRef<{ dispose(): void } | null>(null)
+  const sqlCompletionDisposableRef = useRef<{ dispose(): void } | null>(null)
+
+  // SQL mode (F076): generated-query preview state, updated by the shared
+  // debounced validation effect below.
+  const [sqlConversion, setSqlConversion] = useState<ConversionResult | null>(null)
+  const [previewCopied, setPreviewCopied] = useState<boolean>(false)
+  const [previewExpanded, setPreviewExpanded] = useState<boolean>(true)
+
+  const handleCopyPreview = useCallback(async (): Promise<void> => {
+    if (!sqlConversion?.ok) return
+    try {
+      await navigator.clipboard.writeText(sqlConversion.preview)
+      setPreviewCopied(true)
+      setTimeout(() => setPreviewCopied(false), 1500)
+    } catch (err) {
+      console.error('Failed to copy:', err)
+    }
+  }, [sqlConversion])
 
   // Saved queries state
   const [showSaveQueryModal, setShowSaveQueryModal] = useState<boolean>(false)
@@ -444,16 +491,21 @@ export default function CollectionView({
     return json
   }, [queryExec.documents])
 
-  // Field validation warnings (computed from query and schema)
+  // Field validation warnings (mongo mode only — computed from query and schema)
   const fieldWarnings = useMemo<FieldWarning[]>(() => {
+    if (queryExec.queryMode !== 'mongo') return []
     if (!isSimpleFindQuery(queryExec.query)) return []
     const schemaFields = queryExec.getFieldNames(connectionId, database, collection)
     if (!schemaFields || schemaFields.size === 0) return []
     const filter = parseFilterFromQuery(queryExec.query)
     return validateFilter(filter, schemaFields)
-  }, [queryExec.query, connectionId, database, collection, queryExec.getFieldNames])
+  }, [queryExec.query, queryExec.queryMode, connectionId, database, collection, queryExec.getFieldNames])
 
-  // Debounced query validation for Monaco editor
+  // Debounced query validation for Monaco editor. Forks by mode: mongo mode
+  // runs the existing syntax/field validator under the 'queryValidator' marker
+  // owner; SQL mode runs convertSQL and sets markers under 'sqlValidator',
+  // clearing the other owner's markers so a mode switch doesn't leave stale
+  // squiggles. Also refreshes the generated-query preview panel.
   useEffect(() => {
     if (validationTimeoutRef.current) {
       clearTimeout(validationTimeoutRef.current)
@@ -466,17 +518,37 @@ export default function CollectionView({
     validationTimeoutRef.current = setTimeout(() => {
       const model = editorRef.current?.getModel()
       if (!model || !monacoRef.current) return
+      const monacoEditorApi = (monacoRef.current as unknown as { editor: typeof MonacoEditor }).editor
 
+      if (queryExec.queryMode === 'sql') {
+        monacoEditorApi.setModelMarkers(model, 'queryValidator', [])
+        const result = convertSQL(queryExec.sqlQuery, {
+          getSchema: () => queryExec.getCachedSchema(connectionId, database, collection),
+        })
+        setSqlConversion(result)
+        if (!result.ok) {
+          const pos = result.position ?? 0
+          const posObj = model.getPositionAt(pos)
+          monacoEditorApi.setModelMarkers(model, 'sqlValidator', [{
+            severity: 8, // Error
+            message: result.error,
+            startLineNumber: posObj.lineNumber,
+            startColumn: posObj.column,
+            endLineNumber: posObj.lineNumber,
+            endColumn: posObj.column + 1,
+          }])
+        } else {
+          monacoEditorApi.setModelMarkers(model, 'sqlValidator', [])
+        }
+        return
+      }
+
+      monacoEditorApi.setModelMarkers(model, 'sqlValidator', [])
       const syntaxDiagnostics = validateQuery(queryExec.query)
       const fieldDiagnostics = fieldWarningsToMonacoDiagnostics(queryExec.query, fieldWarnings)
       const allDiagnostics: (QueryDiagnostic | MonacoDiagnostic)[] = [...syntaxDiagnostics, ...fieldDiagnostics]
       const markers = toMonacoMarkers(monacoRef.current, allDiagnostics as QueryDiagnostic[])
-
-      ;(monacoRef.current as unknown as { editor: typeof MonacoEditor }).editor.setModelMarkers(
-        model,
-        'queryValidator',
-        markers
-      )
+      monacoEditorApi.setModelMarkers(model, 'queryValidator', markers)
     }, 300)
 
     return () => {
@@ -484,7 +556,28 @@ export default function CollectionView({
         clearTimeout(validationTimeoutRef.current)
       }
     }
-  }, [queryExec.query, fieldWarnings])
+  }, [queryExec.query, queryExec.sqlQuery, queryExec.queryMode, fieldWarnings, connectionId, database, collection, queryExec.getCachedSchema])
+
+  // Monaco's registerCompletionItemProvider is global per language id: every
+  // open tab keeps its CollectionView mounted (App.tsx toggles display:none
+  // rather than unmounting), so every tab registers its own provider for the
+  // shared 'mongoquery'/'mongosql' languages, and Monaco merges suggestions
+  // from ALL of them for the actively-focused editor — producing one duplicate
+  // entry per open tab. Guard each provider so it only answers for its own
+  // editor's model (the model Monaco actually passes is always the focused
+  // editor's, regardless of which tab's provider is being invoked).
+  function guardOwnModel<P extends { provideCompletionItems: (model: never, position: never) => { suggestions: unknown[] } }>(
+    provider: P,
+    ownModel: () => unknown
+  ): P {
+    return {
+      ...provider,
+      provideCompletionItems: ((model: never, position: never) => {
+        if (model !== ownModel()) return { suggestions: [] }
+        return provider.provideCompletionItems(model, position)
+      }) as P['provideCompletionItems'],
+    }
+  }
 
   // Register query completion provider (re-registers when collection changes)
   useEffect(() => {
@@ -496,9 +589,25 @@ export default function CollectionView({
     })
     completionDisposableRef.current = fullMonacoRef.current.languages.registerCompletionItemProvider(
       'mongoquery',
-      provider
+      guardOwnModel(provider, () => editorRef.current?.getModel() ?? undefined)
     )
     return () => { completionDisposableRef.current?.dispose() }
+  }, [connectionId, database, collection, queryExec.getCachedSchema, queryExec.getFieldNames])
+
+  // Register SQL completion provider (re-registers when collection changes)
+  useEffect(() => {
+    if (!fullMonacoRef.current) return
+    sqlCompletionDisposableRef.current?.dispose()
+    const provider = createSqlCompletionProvider({
+      getSchema: () => queryExec.getCachedSchema(connectionId, database, collection),
+      getFieldNames: () => queryExec.getFieldNames(connectionId, database, collection),
+      getCurrentCollection: () => collection,
+    })
+    sqlCompletionDisposableRef.current = fullMonacoRef.current.languages.registerCompletionItemProvider(
+      'mongosql',
+      guardOwnModel(provider, () => editorRef.current?.getModel() ?? undefined)
+    )
+    return () => { sqlCompletionDisposableRef.current?.dispose() }
   }, [connectionId, database, collection, queryExec.getCachedSchema, queryExec.getFieldNames])
 
   // Helper to open insert tab
@@ -658,7 +767,86 @@ export default function CollectionView({
         },
       })
     }
+
+    // SQL mode (F076): independent registration — Monaco's built-in 'sql' is
+    // highlight-only and doesn't know ObjectId()/ISODate() pseudo-functions.
+    if (!monaco.languages.getLanguages().some((lang: MonacoLanguageInfo) => lang.id === 'mongosql')) {
+      monaco.languages.register({ id: 'mongosql' })
+
+      monaco.languages.setMonarchTokensProvider('mongosql', {
+        defaultToken: '',
+        tokenPostfix: '.mongosql',
+        ignoreCase: true,
+        keywords: [
+          'SELECT', 'FROM', 'WHERE', 'AND', 'OR', 'NOT', 'IN', 'LIKE', 'BETWEEN',
+          'IS', 'NULL', 'ORDER', 'BY', 'ASC', 'DESC', 'LIMIT', 'GROUP', 'HAVING',
+          'COUNT', 'SUM', 'AVG', 'MIN', 'MAX', 'DISTINCT', 'AS',
+        ],
+        typeFunctions: ['ObjectId', 'ISODate'],
+        operators: ['=', '!=', '<>', '<', '>', '<=', '>='],
+        symbols: /[=><!]+/,
+        tokenizer: {
+          root: [
+            [/[a-zA-Z_][a-zA-Z0-9_]*(?=\s*\()/, {
+              cases: { '@typeFunctions': 'keyword.function', '@keywords': 'keyword', '@default': 'identifier' },
+            }],
+            [/[a-zA-Z_][a-zA-Z0-9_]*/, {
+              cases: {
+                '@keywords': 'keyword',
+                'true|false': 'keyword.constant',
+                '@default': 'identifier',
+              },
+            }],
+            { include: '@whitespace' },
+            [/[()]/, '@brackets'],
+            [/,/, 'delimiter'],
+            [/\*/, 'keyword.operator'],
+            [/@symbols/, {
+              cases: { '@operators': 'operator', '@default': '' },
+            }],
+            [/\d*\.\d+/, 'number.float'],
+            [/\d+/, 'number'],
+            [/"([^"\\]|\\.)*$/, 'string.invalid'],
+            [/"/, { token: 'string.quote', bracket: '@open', next: '@string_double' }],
+            [/'([^'\\]|\\.)*$/, 'string.invalid'],
+            [/'/, { token: 'string.quote', bracket: '@open', next: '@string_single' }],
+          ],
+          string_double: [
+            [/[^\\"]+/, 'string'],
+            [/""/, 'string'],
+            [/"/, { token: 'string.quote', bracket: '@close', next: '@pop' }],
+          ],
+          string_single: [
+            [/[^\\']+/, 'string'],
+            [/''/, 'string'],
+            [/'/, { token: 'string.quote', bracket: '@close', next: '@pop' }],
+          ],
+          whitespace: [
+            [/[ \t\r\n]+/, 'white'],
+          ],
+        },
+      })
+    }
   }, [])
+
+  // Toggle between MongoDB and SQL editor modes. Both buffers persist; the
+  // inactive mode's markers are cleared (the other effect owns re-populating
+  // them) and the Monaco model language is swapped without remounting.
+  const handleModeToggle = useCallback(
+    (mode: 'mongo' | 'sql') => {
+      if (mode === queryExec.queryMode) return
+      queryExec.setQueryMode(mode)
+      queryExec.setSkip(0)
+      const model = editorRef.current?.getModel()
+      const monacoEditorApi = (fullMonacoRef.current as { editor?: typeof MonacoEditor })?.editor
+      if (model && monacoEditorApi) {
+        monacoEditorApi.setModelLanguage(model, mode === 'sql' ? 'mongosql' : 'mongoquery')
+        monacoEditorApi.setModelMarkers(model, 'queryValidator', [])
+        monacoEditorApi.setModelMarkers(model, 'sqlValidator', [])
+      }
+    },
+    [queryExec]
+  )
 
   const handleEditorMount: OnMount = useCallback(
     (editorInstance, monaco) => {
@@ -688,6 +876,33 @@ export default function CollectionView({
           {/* Buttons row */}
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
+              {/* SQL mode toggle (F076) */}
+              <div className="flex rounded overflow-hidden border border-border" role="tablist" aria-label="Query language">
+                <button
+                  className={`px-2.5 py-1 text-xs font-medium transition-colors ${
+                    queryExec.queryMode === 'mongo'
+                      ? 'bg-surface-hover text-text'
+                      : 'text-text-muted hover:text-text-light hover:bg-surface'
+                  }`}
+                  onClick={() => handleModeToggle('mongo')}
+                  role="tab"
+                  aria-selected={queryExec.queryMode === 'mongo'}
+                >
+                  MongoDB
+                </button>
+                <button
+                  className={`px-2.5 py-1 text-xs font-medium transition-colors border-l border-border ${
+                    queryExec.queryMode === 'sql'
+                      ? 'bg-surface-hover text-text'
+                      : 'text-text-muted hover:text-text-light hover:bg-surface'
+                  }`}
+                  onClick={() => handleModeToggle('sql')}
+                  role="tab"
+                  aria-selected={queryExec.queryMode === 'sql'}
+                >
+                  SQL
+                </button>
+              </div>
               {queryExec.loading ? (
                 <button
                   className="btn btn-secondary flex items-center gap-1.5 text-error hover:text-red-300"
@@ -734,14 +949,21 @@ export default function CollectionView({
                 connectionId={connectionId}
                 database={database}
                 collection={collection}
-                onSelectQuery={(q: string) => queryExec.setQuery(buildFullQuery(collection, q))}
+                onSelectQuery={(q: string) => {
+                  // Saved queries are mongo-only this ticket (F076).
+                  queryExec.setQueryMode('mongo')
+                  queryExec.setQuery(buildFullQuery(collection, q))
+                }}
                 onManageQueries={() => setShowSavedQueriesManager(true)}
                 refreshTrigger={savedQueriesRefreshKey}
               />
               <button
-                className="icon-btn p-1.5 hover:bg-surface-hover text-text-muted hover:text-primary"
-                onClick={() => setShowSaveQueryModal(true)}
-                title="Save current query"
+                className={`icon-btn p-1.5 hover:bg-surface-hover text-text-muted hover:text-primary ${
+                  queryExec.queryMode === 'sql' ? 'opacity-40 cursor-not-allowed' : ''
+                }`}
+                onClick={() => queryExec.queryMode === 'mongo' && setShowSaveQueryModal(true)}
+                disabled={queryExec.queryMode === 'sql'}
+                title={queryExec.queryMode === 'sql' ? 'Switch to MongoDB mode to save queries' : 'Save current query'}
               >
                 <SaveIcon className="w-4 h-4" />
               </button>
@@ -756,7 +978,14 @@ export default function CollectionView({
                 {showHistory && (
                   <QueryHistoryDropdown
                     queryHistory={queryExec.queryHistory}
-                    onSelect={queryExec.setQuery}
+                    onSelect={(q, mode) => {
+                      queryExec.setQueryMode(mode)
+                      if (mode === 'sql') {
+                        queryExec.setSqlQuery(q)
+                      } else {
+                        queryExec.setQuery(q)
+                      }
+                    }}
                     onClose={() => setShowHistory(false)}
                     historyRef={historyRef}
                   />
@@ -766,7 +995,11 @@ export default function CollectionView({
                 connectionId={connectionId}
                 database={database}
                 collection={collection}
-                currentFilter={parseFilterFromQuery(queryExec.query)}
+                currentFilter={
+                  queryExec.queryMode === 'sql'
+                    ? (sqlConversion?.ok && sqlConversion.kind === 'find' ? sqlConversion.filter : '{}')
+                    : parseFilterFromQuery(queryExec.query)
+                }
                 disabled={!queryExec.isConnected}
               />
             </div>
@@ -777,8 +1010,14 @@ export default function CollectionView({
               height={`${editorHeight}px`}
               defaultLanguage="mongoquery"
               theme="mongopal-dark"
-              value={queryExec.query}
-              onChange={(value) => queryExec.setQuery(value || '')}
+              value={activeQueryText}
+              onChange={(value) => {
+                if (queryExec.queryMode === 'sql') {
+                  queryExec.setSqlQuery(value || '')
+                } else {
+                  queryExec.setQuery(value || '')
+                }
+              }}
               options={{
                 minimap: { enabled: false },
                 lineNumbers: 'on',
@@ -819,6 +1058,50 @@ export default function CollectionView({
             {...resizerProps}
             title="Drag to resize editor"
           />
+          {/* Generated query panel (F076) - read-only, debounced live preview */}
+          {queryExec.queryMode === 'sql' && (
+            <div className="border border-border rounded bg-background overflow-hidden">
+              <div className="px-2 py-1 border-b border-border flex items-center justify-between">
+                <button
+                  className="flex items-center gap-1 text-[11px] uppercase tracking-wide text-text-dim hover:text-text-light"
+                  onClick={() => setPreviewExpanded((v) => !v)}
+                  title={previewExpanded ? 'Collapse generated query' : 'Expand generated query'}
+                >
+                  <ChevronIcon className={`w-3 h-3 transition-transform ${previewExpanded ? 'rotate-90' : ''}`} />
+                  Generated
+                </button>
+                {previewExpanded && sqlConversion?.ok && (
+                  <button
+                    className={`icon-btn p-1 rounded hover:bg-surface-hover ${previewCopied ? 'text-primary' : 'text-text-muted hover:text-text-light'}`}
+                    onClick={handleCopyPreview}
+                    title={previewCopied ? 'Copied!' : 'Copy generated query'}
+                  >
+                    {previewCopied ? <CopyCheckIcon className="w-3.5 h-3.5" /> : <CopyIcon className="w-3.5 h-3.5" />}
+                  </button>
+                )}
+              </div>
+              {previewExpanded && (
+                sqlConversion?.ok ? (
+                  <>
+                    <pre className="px-2 py-1.5 text-xs font-mono text-text-secondary overflow-auto max-h-32 whitespace-pre-wrap select-text">
+                      {sqlConversion.preview}
+                    </pre>
+                    {sqlConversion.warnings.length > 0 && (
+                      <div className="px-2 py-1 border-t border-border bg-warning-dark/10">
+                        {sqlConversion.warnings.map((w, i) => (
+                          <div key={i} className="text-[11px] text-warning/80">{w}</div>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                ) : sqlConversion && !sqlConversion.ok ? (
+                  <div className="px-2 py-1.5 text-xs text-error font-mono">{sqlConversion.error}</div>
+                ) : (
+                  <div className="px-2 py-1.5 text-xs text-text-dim">Type a SQL query to see the generated MongoDB query.</div>
+                )
+              )}
+            </div>
+          )}
         </div>
       </div>
 
@@ -878,99 +1161,108 @@ export default function CollectionView({
             queryExec.paginationResetHighlight ? 'pagination-reset-highlight' : ''
           } ${viewMode === 'explain' ? 'invisible' : ''}`}
         >
-          {/* Page size selector */}
-          <select
-            className="bg-surface border border-border rounded px-1.5 py-0.5 text-xs text-text-secondary"
-            value={queryExec.userLimit}
-            onChange={(e: ChangeEvent<HTMLSelectElement>) => {
-              const newLimit = parseInt(e.target.value, 10)
-              queryExec.setUserLimit(newLimit)
-              queryExec.setSkip(0)
-            }}
-          >
-            {queryExec.hasLargeDocWarning && (
-              <>
-                <option value={1}>1</option>
-                <option value={2}>2</option>
-                <option value={5}>5</option>
-              </>
-            )}
-            <option value={10}>10</option>
-            <option value={25}>25</option>
-            <option value={50}>50</option>
-            <option value={100}>100</option>
-          </select>
-          <span>per page</span>
-
-          <span className="mx-1 text-text-dim">|</span>
-
-          <span>
-            {queryExec.total > 0 ? `${queryExec.skip + 1}-${Math.min(queryExec.skip + queryExec.limit, queryExec.total)}` : '0'} of {queryExec.total}
-          </span>
-
-          <span className="mx-1 text-text-dim">|</span>
-
-          {/* Navigation buttons */}
-          <div className="flex gap-0.5">
-            <button
-              className="pagination-btn px-1.5 py-0.5 rounded hover:bg-surface-hover disabled:opacity-30 disabled:cursor-not-allowed"
-              onClick={() => queryExec.setSkip(0)}
-              disabled={queryExec.skip === 0}
-              title="First page"
-            >
-              &#xAB;&#xAB;
-            </button>
-            <button
-              className="pagination-btn px-1.5 py-0.5 rounded hover:bg-surface-hover disabled:opacity-30 disabled:cursor-not-allowed"
-              onClick={() => queryExec.setSkip(Math.max(0, queryExec.skip - queryExec.limit))}
-              disabled={queryExec.skip === 0}
-              title="Previous page"
-            >
-              &#xAB;
-            </button>
-
-            {/* Page number input */}
-            <div className="flex items-center gap-1 mx-1">
-              <input
-                type="text"
-                className="w-10 px-1.5 py-0.5 bg-surface border border-border rounded text-center text-xs"
-                value={queryExec.goToPage || queryExec.currentPage}
-                onChange={(e: ChangeEvent<HTMLInputElement>) => queryExec.setGoToPage(e.target.value)}
-                onKeyDown={(e: KeyboardEvent<HTMLInputElement>) => {
-                  if (e.key === 'Enter') {
-                    const page = parseInt(queryExec.goToPage, 10)
-                    if (page >= 1 && page <= queryExec.totalPages) {
-                      queryExec.setSkip((page - 1) * queryExec.limit)
-                    }
-                    queryExec.setGoToPage('')
-                  }
+          {queryExec.resultKind === 'aggregate' ? (
+            <span>
+              Showing first {queryExec.total} group{queryExec.total === 1 ? '' : 's'}
+              {queryExec.total >= queryExec.limit ? ' (more groups may exist)' : ''}
+            </span>
+          ) : (
+            <>
+              {/* Page size selector */}
+              <select
+                className="bg-surface border border-border rounded px-1.5 py-0.5 text-xs text-text-secondary"
+                value={queryExec.userLimit}
+                onChange={(e: ChangeEvent<HTMLSelectElement>) => {
+                  const newLimit = parseInt(e.target.value, 10)
+                  queryExec.setUserLimit(newLimit)
+                  queryExec.setSkip(0)
                 }}
-                onBlur={() => queryExec.setGoToPage('')}
-                autoComplete="off"
-                autoCorrect="off"
-                autoCapitalize="off"
-                spellCheck={false}
-              />
-              <span>/ {queryExec.totalPages || 1}</span>
-            </div>
+              >
+                {queryExec.hasLargeDocWarning && (
+                  <>
+                    <option value={1}>1</option>
+                    <option value={2}>2</option>
+                    <option value={5}>5</option>
+                  </>
+                )}
+                <option value={10}>10</option>
+                <option value={25}>25</option>
+                <option value={50}>50</option>
+                <option value={100}>100</option>
+              </select>
+              <span>per page</span>
 
-            <button
-              className="pagination-btn px-1.5 py-0.5 rounded hover:bg-surface-hover disabled:opacity-30 disabled:cursor-not-allowed"
-              onClick={() => queryExec.setSkip(queryExec.skip + queryExec.limit)}
-              disabled={queryExec.skip + queryExec.limit >= queryExec.total}
-              title="Next page"
-            >
-              &#xBB;
-            </button>
-            <button
-              className="pagination-btn px-1.5 py-0.5 rounded hover:bg-surface-hover disabled:opacity-30 disabled:cursor-not-allowed"
-              onClick={() => queryExec.setSkip((queryExec.totalPages - 1) * queryExec.limit)}
-              disabled={queryExec.skip + queryExec.limit >= queryExec.total}
-              title="Last page"
-            >
-              &#xBB;&#xBB;
-            </button>
-          </div>
+              <span className="mx-1 text-text-dim">|</span>
+
+              <span>
+                {queryExec.total > 0 ? `${queryExec.skip + 1}-${Math.min(queryExec.skip + queryExec.limit, queryExec.total)}` : '0'} of {queryExec.total}
+              </span>
+
+              <span className="mx-1 text-text-dim">|</span>
+
+              {/* Navigation buttons */}
+              <div className="flex gap-0.5">
+                <button
+                  className="pagination-btn px-1.5 py-0.5 rounded hover:bg-surface-hover disabled:opacity-30 disabled:cursor-not-allowed"
+                  onClick={() => queryExec.setSkip(0)}
+                  disabled={queryExec.skip === 0}
+                  title="First page"
+                >
+                  &#xAB;&#xAB;
+                </button>
+                <button
+                  className="pagination-btn px-1.5 py-0.5 rounded hover:bg-surface-hover disabled:opacity-30 disabled:cursor-not-allowed"
+                  onClick={() => queryExec.setSkip(Math.max(0, queryExec.skip - queryExec.limit))}
+                  disabled={queryExec.skip === 0}
+                  title="Previous page"
+                >
+                  &#xAB;
+                </button>
+
+                {/* Page number input */}
+                <div className="flex items-center gap-1 mx-1">
+                  <input
+                    type="text"
+                    className="w-10 px-1.5 py-0.5 bg-surface border border-border rounded text-center text-xs"
+                    value={queryExec.goToPage || queryExec.currentPage}
+                    onChange={(e: ChangeEvent<HTMLInputElement>) => queryExec.setGoToPage(e.target.value)}
+                    onKeyDown={(e: KeyboardEvent<HTMLInputElement>) => {
+                      if (e.key === 'Enter') {
+                        const page = parseInt(queryExec.goToPage, 10)
+                        if (page >= 1 && page <= queryExec.totalPages) {
+                          queryExec.setSkip((page - 1) * queryExec.limit)
+                        }
+                        queryExec.setGoToPage('')
+                      }
+                    }}
+                    onBlur={() => queryExec.setGoToPage('')}
+                    autoComplete="off"
+                    autoCorrect="off"
+                    autoCapitalize="off"
+                    spellCheck={false}
+                  />
+                  <span>/ {queryExec.totalPages || 1}</span>
+                </div>
+
+                <button
+                  className="pagination-btn px-1.5 py-0.5 rounded hover:bg-surface-hover disabled:opacity-30 disabled:cursor-not-allowed"
+                  onClick={() => queryExec.setSkip(queryExec.skip + queryExec.limit)}
+                  disabled={queryExec.skip + queryExec.limit >= queryExec.total}
+                  title="Next page"
+                >
+                  &#xBB;
+                </button>
+                <button
+                  className="pagination-btn px-1.5 py-0.5 rounded hover:bg-surface-hover disabled:opacity-30 disabled:cursor-not-allowed"
+                  onClick={() => queryExec.setSkip((queryExec.totalPages - 1) * queryExec.limit)}
+                  disabled={queryExec.skip + queryExec.limit >= queryExec.total}
+                  title="Last page"
+                >
+                  &#xBB;&#xBB;
+                </button>
+              </div>
+            </>
+          )}
 
           {/* Column visibility toggle - only in table view */}
           {viewMode === 'table' && (
@@ -1026,8 +1318,8 @@ export default function CollectionView({
         </div>
       )}
 
-      {/* Auto-projection info bar (LDH-03) */}
-      {queryExec.autoProjectionInfo && (
+      {/* Auto-projection info bar (LDH-03) - mongo mode only */}
+      {queryExec.queryMode === 'mongo' && queryExec.autoProjectionInfo && (
         <div className="flex-shrink-0 px-3 py-1.5 bg-info-dark/20 border-b border-blue-800/40 flex items-center gap-2 text-xs">
           <svg className="w-3.5 h-3.5 text-info flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -1398,6 +1690,7 @@ export default function CollectionView({
         database={database}
         collection={collection}
         onQuerySelected={(savedQuery: { collection: string; query: string }) => {
+          queryExec.setQueryMode('mongo')
           queryExec.setQuery(buildFullQuery(savedQuery.collection, savedQuery.query))
         }}
         onQueriesChanged={() => setSavedQueriesRefreshKey((k) => k + 1)}

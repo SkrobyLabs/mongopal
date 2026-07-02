@@ -7,10 +7,14 @@ import { useState, useRef, useEffect, useCallback, LegacyRef } from 'react'
 /**
  * Query history item stored in localStorage
  */
+export type QueryEditorMode = 'mongo' | 'sql'
+
 export interface QueryHistoryItem {
   query: string
   collection: string
   timestamp: number
+  /** Editor mode this entry was captured in. Absent = 'mongo' (back-compat). */
+  mode?: QueryEditorMode
 }
 
 export interface UseQueryHistoryOptions {
@@ -69,11 +73,13 @@ export function addToQueryHistoryList(
   currentHistory: QueryHistoryItem[],
   query: string,
   database: string,
-  collection: string
+  collection: string,
+  mode: QueryEditorMode = 'mongo'
 ): QueryHistoryItem[] {
   return [
-    { query, collection: `${database}.${collection}`, timestamp: Date.now() },
-    ...currentHistory.filter((h) => h.query !== query),
+    { query, collection: `${database}.${collection}`, timestamp: Date.now(), mode },
+    // De-dupe on the (query, mode) pair so the same text in each mode coexists.
+    ...currentHistory.filter((h) => h.query !== query || (h.mode ?? 'mongo') !== mode),
   ].slice(0, MAX_HISTORY_ITEMS)
 }
 

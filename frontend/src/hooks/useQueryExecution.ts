@@ -20,12 +20,25 @@ import { extractFieldPathsFromDocs } from '../utils/schemaUtils'
 import { parseMongoshOutput, MongoshParseResult } from '../utils/mongoshParser'
 import { getErrorSummary } from '../utils/errorParser'
 import { MongoDocument } from '../utils/tableViewUtils'
+import { convertSQL } from '../utils/sqlConverter'
 import {
   loadQueryHistory,
   saveQueryHistory,
   addToQueryHistoryList,
   QueryHistoryItem,
+  QueryEditorMode,
 } from './useQueryHistory'
+
+// Default SQL buffer for a collection. Quote the name when it is not a plain
+// identifier so dotted/spaced/hyphenated collections don't produce a parse error.
+export function buildDefaultSql(collection: string): string {
+  const name = /^[A-Za-z_][A-Za-z0-9_]*$/.test(collection) ? collection : `"${collection}"`
+  return `SELECT * FROM ${name}`
+}
+
+// Max result cap for SQL aggregate execution — matches AggregateDocuments'
+// own 1-1000 clamp in the Go binding.
+const AGGREGATE_SAFETY_LIMIT = 1000
 
 // =============================================================================
 // Types
@@ -48,6 +61,13 @@ export interface UseQueryExecutionReturn {
   // Query state
   query: string
   setQuery: (query: string) => void
+  // SQL mode (F076): per-mode editor buffers persist across mode switches.
+  queryMode: QueryEditorMode
+  setQueryMode: (mode: QueryEditorMode) => void
+  sqlQuery: string
+  setSqlQuery: (sql: string) => void
+  /** Kind of the last executed result — 'aggregate' disables pagination. */
+  resultKind: 'find' | 'aggregate'
   documents: MongoDocument[]
   loading: boolean
   error: string | null
@@ -167,6 +187,12 @@ export function useQueryExecution({
 
   // Core query state
   const [query, setQuery] = useState<string>(() => buildFullQuery(collection, '{}'))
+  // SQL mode (F076): the mongo `query` buffer keeps its name; `sqlQuery` is the
+  // parallel SQL buffer. Both persist across mode switches; the editor binds to
+  // whichever the active mode selects.
+  const [queryMode, setQueryMode] = useState<QueryEditorMode>('mongo')
+  const [sqlQuery, setSqlQuery] = useState<string>(() => buildDefaultSql(collection))
+  const [resultKind, setResultKind] = useState<'find' | 'aggregate'>('find')
   const [documents, setDocuments] = useState<MongoDocument[]>([])
   const [loading, setLoading] = useState<boolean>(false)
   const [error, setError] = useState<string | null>(null)
@@ -276,9 +302,12 @@ export function useQueryExecution({
     autoProjectionAppliedRef.current = 'opted-out'
   }, [query, collection])
 
-  // Reset query when collection changes
+  // Reset both editor buffers when collection changes (mode is preserved; the
+  // active editor shows its mode's fresh default).
   useEffect(() => {
     setQuery(buildFullQuery(collection, '{}'))
+    setSqlQuery(buildDefaultSql(collection))
+    setResultKind('find')
   }, [collection])
 
   // Detect pagination reset and trigger highlight animation
@@ -396,7 +425,141 @@ export function useQueryExecution({
     notify.info('Query cancelled')
   }, [notify])
 
+  // SQL mode execution (F076). Runs before the mongo read-only guard: SQL mode
+  // is read-only by construction (no DML in the grammar) and the Go binding
+  // rejects $out/$merge server-side, so isWriteQuery's regex scan (which reads
+  // the mongo buffer) does not apply here.
+  const executeSqlQuery = useCallback(async (): Promise<void> => {
+    const currentQueryId = ++queryIdRef.current
+    const startTime = performance.now()
+    const go = getGo()
+
+    const schema = getCachedSchema(connectionId, database, collection)
+    const result = convertSQL(sqlQuery, { getSchema: () => schema })
+
+    if (!result.ok) {
+      setError(result.error)
+      setDocuments([])
+      setTotal(0)
+      setResultKind('find')
+      return
+    }
+
+    if (result.collection && result.collection !== collection) {
+      notify.warning(`Note: query targets '${result.collection}' but you're viewing '${collection}'`)
+    }
+
+    setLoading(true)
+    setError(null)
+
+    try {
+      if (result.kind === 'find') {
+        if (!go?.FindDocuments) return
+        const findResult = await go.FindDocuments(connectionId, database, collection, result.filter, {
+          skip,
+          limit: result.limit ?? limit,
+          sort: result.sort,
+          projection: result.projection,
+        } as Parameters<typeof go.FindDocuments>[4])
+        if (currentQueryId !== queryIdRef.current) return
+        setResultKind('find')
+        if (!findResult || !findResult.documents) {
+          setDocuments([])
+          setTotal(0)
+          setQueryTime(null)
+        } else {
+          const parsedDocs: MongoDocument[] = findResult.documents.map((d: string) => JSON.parse(d))
+          setDocuments(parsedDocs)
+          setTotal(findResult.total || 0)
+          setQueryTime(findResult.queryTimeMs ?? null)
+
+          const columnsFromDocs = new Set<string>()
+          parsedDocs.forEach((doc) => Object.keys(doc).forEach((key) => columnsFromDocs.add(key)))
+          const sortedColumns = Array.from(columnsFromDocs).sort((a, b) => {
+            if (a === '_id') return -1
+            if (b === '_id') return 1
+            return a.localeCompare(b)
+          })
+          setAllAvailableColumns(sortedColumns)
+
+          if (parsedDocs.length > 0) {
+            const fieldPaths = extractFieldPathsFromDocs(parsedDocs)
+            mergeFieldNames(connectionId, database, collection, fieldPaths)
+          }
+        }
+      } else {
+        // Aggregate (GROUP BY / DISTINCT / bare COUNT(*))
+        if (!go?.AggregateDocuments) {
+          throw new Error('GROUP BY execution requires the aggregate binding, which is not available.')
+        }
+        // Pass the max safety cap (matching the Go binding's own 1-1000 clamp),
+        // not the mongo-mode page size: an explicit SQL LIMIT is already baked
+        // into result.pipeline as a $limit stage, and pagination is disabled
+        // for aggregate results anyway, so the page-size control shouldn't
+        // silently truncate a larger user-specified LIMIT.
+        const aggResult = await go.AggregateDocuments(connectionId, database, collection, result.pipeline, {
+          skip: 0,
+          limit: AGGREGATE_SAFETY_LIMIT,
+        } as Parameters<typeof go.AggregateDocuments>[4])
+        if (currentQueryId !== queryIdRef.current) return
+        setResultKind('aggregate')
+        setSkip(0)
+        if (!aggResult || !aggResult.documents) {
+          setDocuments([])
+          setTotal(0)
+          setQueryTime(null)
+        } else {
+          const parsedDocs: MongoDocument[] = aggResult.documents.map((d: string) => JSON.parse(d))
+          setDocuments(parsedDocs)
+          setTotal(aggResult.total ?? parsedDocs.length)
+          setQueryTime(aggResult.queryTimeMs ?? null)
+
+          const columnsFromDocs = new Set<string>()
+          parsedDocs.forEach((doc) => Object.keys(doc).forEach((key) => columnsFromDocs.add(key)))
+          setAllAvailableColumns(Array.from(columnsFromDocs).sort())
+        }
+      }
+
+      const trimmedSql = sqlQuery.trim()
+      if (trimmedSql && trimmedSql !== buildDefaultSql(collection)) {
+        const newHistory = addToQueryHistoryList(queryHistory, sqlQuery, database, collection, 'sql')
+        setQueryHistory(newHistory)
+        saveQueryHistory(newHistory)
+      }
+
+      const duration = Math.round(performance.now() - startTime)
+      logQuery(`SQL query executed (${duration}ms)`, { database, collection })
+    } catch (err) {
+      if (currentQueryId !== queryIdRef.current) return
+      const errorMsg = err instanceof Error ? err.message : typeof err === 'string' ? err : 'Failed to execute query'
+      setError(errorMsg)
+      notify.error(getErrorSummary(errorMsg))
+      setDocuments([])
+      setTotal(0)
+    } finally {
+      if (currentQueryId === queryIdRef.current) {
+        setLoading(false)
+      }
+    }
+  }, [
+    sqlQuery,
+    database,
+    collection,
+    connectionId,
+    skip,
+    limit,
+    queryHistory,
+    notify,
+    logQuery,
+    getCachedSchema,
+    mergeFieldNames,
+  ])
+
   const executeQuery = useCallback(async (): Promise<void> => {
+    if (queryMode === 'sql') {
+      return executeSqlQuery()
+    }
+
     const currentQueryId = ++queryIdRef.current
     const startTime = performance.now()
     const isSimple = isSimpleFindQuery(query)
@@ -468,6 +631,7 @@ export function useQueryExecution({
 
     setLoading(true)
     setError(null)
+    setResultKind('find')
 
     const settings: AppSettings = loadSettings()
     const timeoutMs = settings.queryTimeout ? settings.queryTimeout * 1000 : 0
@@ -656,6 +820,8 @@ export function useQueryExecution({
     }
   }, [
     query,
+    queryMode,
+    executeSqlQuery,
     readOnly,
     isWriteQuery,
     notify,
@@ -680,6 +846,37 @@ export function useQueryExecution({
 
   // Explain the current query
   const explainQuery = useCallback(async (): Promise<void> => {
+    if (queryMode === 'sql') {
+      const schema = getCachedSchema(connectionId, database, collection)
+      const result = convertSQL(sqlQuery, { getSchema: () => schema })
+      if (!result.ok) {
+        notify.warning('Fix the SQL parse error before running Explain')
+        return
+      }
+      if (result.kind === 'aggregate') {
+        notify.warning('Explain is not available for GROUP BY queries')
+        return
+      }
+      if (result.collection && result.collection !== collection) {
+        notify.warning(`Note: query targets '${result.collection}' but you're viewing '${collection}'`)
+      }
+      setExplaining(true)
+      setExplainResult(null)
+      try {
+        const go = getGo()
+        if (go?.ExplainQuery) {
+          const explainResultData = await go.ExplainQuery(connectionId, database, collection, result.filter)
+          setExplainResult(explainResultData as unknown as ExplainResult)
+        }
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : typeof err === 'string' ? err : 'Failed to explain query'
+        notify.error(getErrorSummary(errorMsg))
+      } finally {
+        setExplaining(false)
+      }
+      return
+    }
+
     if (!isSimpleFindQuery(query)) {
       notify.warning('Explain is only available for simple find queries')
       return
@@ -706,12 +903,17 @@ export function useQueryExecution({
     } finally {
       setExplaining(false)
     }
-  }, [query, notify, connectionId, database, collection])
+  }, [query, queryMode, sqlQuery, notify, connectionId, database, collection, getCachedSchema])
 
   return {
     // Query state
     query,
     setQuery,
+    queryMode,
+    setQueryMode,
+    sqlQuery,
+    setSqlQuery,
+    resultKind,
     documents,
     loading,
     error,

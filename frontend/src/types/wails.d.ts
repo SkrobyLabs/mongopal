@@ -58,6 +58,14 @@ export interface WailsAppBindings {
     query: string,
     options: main.QueryOptions
   ): Promise<main.QueryResult>
+  // SQL GROUP BY execution (F076): pipeline is an EJSON array string.
+  AggregateDocuments(
+    connectionId: string,
+    database: string,
+    collection: string,
+    pipeline: string,
+    options: main.QueryOptions
+  ): Promise<main.QueryResult>
   GetDocument(connectionId: string, database: string, collection: string, documentId: string): Promise<string>
   InsertDocument(connectionId: string, database: string, collection: string, document: string): Promise<string>
   UpdateDocument(

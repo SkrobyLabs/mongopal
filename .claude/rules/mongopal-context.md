@@ -97,6 +97,8 @@ Lightweight, cross-platform MongoDB GUI for exploring, viewing, and editing docu
 | Table formatting utils | `frontend/src/utils/tableViewUtils.ts` |
 | Error parsing for actionable hints | `frontend/src/utils/errorParser.ts` |
 | Query editor autocomplete provider | `frontend/src/utils/queryCompletionProvider.ts` |
+| Shared schema field-type lookup (used by both completion providers + SQL transformer) | `frontend/src/utils/schemaFieldLookup.ts` |
+| SQL→MongoDB query converter (F076) | `frontend/src/utils/sqlConverter/` (tokenizer, parser, transformer, serializer, index, sqlCompletionProvider) |
 
 ## Key Patterns
 
@@ -236,7 +238,7 @@ The backend uses a thin facade pattern:
 | Connection | Connect, Disconnect, TestConnection, GetServerInfo | `internal/connection` |
 | Storage | SaveConnection, SaveExtendedConnection, GetExtendedConnection, ListSavedConnections, CreateFolder, etc. | `internal/storage` |
 | Database | ListDatabases, ListCollections, DropDatabase, DropCollection | `internal/database` |
-| Document | FindDocuments, GetDocument, InsertDocument, UpdateDocument, DeleteDocument | `internal/document` |
+| Document | FindDocuments, AggregateDocuments, GetDocument, InsertDocument, UpdateDocument, DeleteDocument | `internal/document` |
 | Schema | InferCollectionSchema, ExportSchemaAsJSON | `internal/schema` |
 | Export | ExportDatabases, ExportSelectiveDatabases, ExportCollections, ExportDocumentsAsZip, ExportCollectionAsJSON, GetJSONSavePath, CheckToolAvailability, ExportWithMongodump | `internal/export` |
 | Import | ImportDatabases, ImportSelectiveDatabases, DryRunSelectiveImport, ImportCollections, PreviewImportFile, ImportJSON, DryRunImportJSON, PreviewJSONFile, DetectFileFormat, GetImportFilePath, PreviewCSVFile, ImportCSV, DryRunImportCSV, ImportWithMongorestore | `internal/importer`, `internal/export` |

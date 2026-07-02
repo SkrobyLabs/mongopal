@@ -465,6 +465,11 @@ func (a *App) FindDocuments(connID, dbName, collName, query string, opts QueryOp
 	return a.document.FindDocuments(connID, dbName, collName, query, opts)
 }
 
+// AggregateDocuments executes an aggregation pipeline (SQL GROUP BY execution, F076).
+func (a *App) AggregateDocuments(connID, dbName, collName, pipeline string, opts QueryOptions) (*QueryResult, error) {
+	return a.document.AggregateDocuments(connID, dbName, collName, pipeline, opts)
+}
+
 func (a *App) GetDocument(connID, dbName, collName, docID string) (string, error) {
 	return a.document.GetDocument(connID, dbName, collName, docID)
 }

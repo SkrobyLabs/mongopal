@@ -15,6 +15,7 @@ A lightweight, cross-platform MongoDB GUI for exploring, viewing, and editing do
 - Collection schema analysis with field type distribution
 - Export/import databases and collections with progress tracking and ETA
 - Query filtering and sorting with mongosh script support
+- SQL query mode with live mongosh preview and schema-aware autocomplete (SELECT/WHERE/ORDER BY/GROUP BY)
 - Secure credential storage (OS keyring with encrypted fallback)
 - Multi-tab interface with pinning, renaming, drag-reorder
 - Full keyboard navigation throughout the app
@@ -137,6 +138,7 @@ mongopal/
 │   │   │   └── ...
 │   │   ├── hooks/          # Custom React hooks (useProgressETA)
 │   │   └── utils/          # Query parsing, schema utils, error parsing, autocomplete
+│   │       └── sqlConverter/  # SQL→MongoDB converter (tokenizer/parser/transformer/serializer)
 │   └── ...
 │
 ├── .claude/                # Claude Code configuration

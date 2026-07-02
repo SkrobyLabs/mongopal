@@ -10,6 +10,7 @@
  */
 
 import type { SchemaResult, SchemaField } from '../components/contexts/SchemaContext'
+import { getFieldType } from './schemaFieldLookup'
 
 // =============================================================================
 // Types
@@ -550,31 +551,9 @@ export function buildValueItems(
 // Schema Helpers
 // =============================================================================
 
-/**
- * Look up the type of a field path in the schema.
- * Navigates dot-separated paths through nested fields.
- */
-export function getFieldType(schema: SchemaResult | null, fieldPath: string): string | undefined {
-  if (!schema?.fields) return undefined
-
-  const parts = fieldPath.split('.')
-  let current: Record<string, SchemaField> | undefined = schema.fields
-
-  for (let i = 0; i < parts.length; i++) {
-    if (!current) return undefined
-    const field: SchemaField | undefined = current[parts[i]]
-    if (!field) return undefined
-
-    if (i === parts.length - 1) {
-      return field.type
-    }
-
-    // Navigate into nested fields or array element fields
-    current = field.fields || field.arrayType?.fields
-  }
-
-  return undefined
-}
+// Re-exported for back-compat — moved to schemaFieldLookup.ts so non-editor
+// consumers (the SQL transformer) don't need to depend on this Monaco-adjacent module.
+export { getFieldType }
 
 /**
  * Get the occurrence count for a field path.

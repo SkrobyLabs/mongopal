@@ -306,6 +306,38 @@ func TestIntegration_FindDocumentsWithProjection(t *testing.T) {
 	assert.NotContains(t, doc, "password", "Should NOT have password field")
 }
 
+func TestIntegration_AggregateDocuments(t *testing.T) {
+	tc := setupTestContainer(t)
+	defer tc.teardown(t)
+
+	tc.seedTestData(t, "testdb", "orders", []bson.M{
+		{"status": "shipped", "amount": 10},
+		{"status": "shipped", "amount": 20},
+		{"status": "pending", "amount": 5},
+	})
+
+	err := tc.app.Connect(tc.connID)
+	require.NoError(t, err)
+
+	pipeline := `[{"$group": {"_id": "$status", "count": {"$sum": 1}, "total": {"$sum": "$amount"}}}, {"$sort": {"_id": 1}}]`
+	result, err := tc.app.AggregateDocuments(tc.connID, "testdb", "orders", pipeline, QueryOptions{Limit: 10})
+	require.NoError(t, err)
+	assert.Len(t, result.Documents, 2, "Should have 2 groups (shipped, pending)")
+
+	var first map[string]interface{}
+	err = json.Unmarshal([]byte(result.Documents[0]), &first)
+	require.NoError(t, err)
+	assert.Equal(t, "pending", first["_id"])
+
+	// Invalid pipeline returns an error, not a panic.
+	_, err = tc.app.AggregateDocuments(tc.connID, "testdb", "orders", "not json", QueryOptions{Limit: 10})
+	assert.Error(t, err, "Invalid pipeline should return an error")
+
+	// $out is rejected.
+	_, err = tc.app.AggregateDocuments(tc.connID, "testdb", "orders", `[{"$out": "otherCollection"}]`, QueryOptions{Limit: 10})
+	assert.Error(t, err, "$out should be rejected")
+}
+
 func TestIntegration_InsertDocument(t *testing.T) {
 	tc := setupTestContainer(t)
 	defer tc.teardown(t)

@@ -57,7 +57,7 @@ func (s *Service) FindDocuments(connID, dbName, collName, query string, opts typ
 	if query == "" || query == "{}" {
 		filter = bson.M{}
 	} else {
-		if err := bson.UnmarshalExtJSON([]byte(query), true, &filter); err != nil {
+		if err := bson.UnmarshalExtJSON([]byte(query), false, &filter); err != nil {
 			debug.LogQuery("Query failed - invalid filter", map[string]interface{}{
 				"database":   dbName,
 				"collection": collName,
@@ -92,7 +92,7 @@ func (s *Service) FindDocuments(connID, dbName, collName, query string, opts typ
 	// Parse projection
 	if opts.Projection != "" && opts.Projection != "{}" {
 		var projection bson.M
-		if err := bson.UnmarshalExtJSON([]byte(opts.Projection), true, &projection); err != nil {
+		if err := bson.UnmarshalExtJSON([]byte(opts.Projection), false, &projection); err != nil {
 			return nil, fmt.Errorf("invalid projection: %w", err)
 		}
 		findOpts.SetProjection(projection)
@@ -102,7 +102,7 @@ func (s *Service) FindDocuments(connID, dbName, collName, query string, opts typ
 	if opts.Sort != "" {
 		if strings.HasPrefix(strings.TrimSpace(opts.Sort), "{") {
 			var sortDoc bson.D
-			if err := bson.UnmarshalExtJSON([]byte(opts.Sort), true, &sortDoc); err != nil {
+			if err := bson.UnmarshalExtJSON([]byte(opts.Sort), false, &sortDoc); err != nil {
 				return nil, fmt.Errorf("invalid sort: %w", err)
 			}
 			findOpts.SetSort(sortDoc)
@@ -168,6 +168,131 @@ func (s *Service) FindDocuments(connID, dbName, collName, query string, opts typ
 		Documents:   documents,
 		Total:       total,
 		HasMore:     opts.Skip+int64(len(documents)) < total,
+		QueryTimeMs: queryTime,
+		Warnings:    warnings,
+	}, nil
+}
+
+// allowedPipelineStages is an explicit allowlist rather than a denylist: this
+// binding is general-purpose (callable with any pipeline string, not just
+// ones the SQL converter produces), and the SQL grammar can only ever emit
+// $match/$group/$sort/$limit/$project. An allowlist stays safe even if a
+// future write- or side-effect-capable stage is added to MongoDB.
+var allowedPipelineStages = map[string]bool{
+	"$match":   true,
+	"$group":   true,
+	"$sort":    true,
+	"$limit":   true,
+	"$skip":    true,
+	"$project": true,
+	"$count":   true,
+}
+
+// parsePipeline parses an EJSON aggregation pipeline string into stages,
+// rejecting any stage not on allowedPipelineStages (this binding is
+// general-purpose and must not become a write vector).
+func parsePipeline(pipeline string) ([]bson.M, error) {
+	var stages bson.A
+	if err := bson.UnmarshalExtJSON([]byte(pipeline), false, &stages); err != nil {
+		return nil, fmt.Errorf("invalid pipeline: %w", err)
+	}
+
+	result := make([]bson.M, 0, len(stages))
+	for _, raw := range stages {
+		var stage bson.M
+		switch v := raw.(type) {
+		case bson.M:
+			stage = v
+		case primitive.D:
+			stage = v.Map()
+		default:
+			return nil, fmt.Errorf("invalid pipeline: each stage must be an object")
+		}
+		if len(stage) != 1 {
+			return nil, fmt.Errorf("invalid pipeline: each stage must have exactly one operator")
+		}
+		for op := range stage {
+			if !allowedPipelineStages[op] {
+				return nil, fmt.Errorf("pipeline stage %q is not allowed", op)
+			}
+		}
+		result = append(result, stage)
+	}
+	return result, nil
+}
+
+// AggregateDocuments executes an aggregation pipeline and returns the results.
+// pipeline is an Extended JSON array string. Only opts.Limit is used (Skip/Sort/
+// Projection would be pipeline stages, not find options, and SQL mode encodes
+// them as $limit/$sort/$project stages already).
+func (s *Service) AggregateDocuments(connID, dbName, collName, pipeline string, opts types.QueryOptions) (*types.QueryResult, error) {
+	debug.LogQuery("Executing aggregate query", map[string]interface{}{
+		"database":   dbName,
+		"collection": collName,
+		"pipeline":   pipeline,
+	})
+
+	client, err := s.state.GetClient(connID)
+	if err != nil {
+		return nil, err
+	}
+
+	ctx, cancel := core.ContextWithTimeout()
+	defer cancel()
+
+	coll := client.Database(dbName).Collection(collName)
+
+	stages, err := parsePipeline(pipeline)
+	if err != nil {
+		return nil, err
+	}
+
+	// Mirror FindDocuments' limit reset-to-default (not a clamp) so HasMore
+	// stays truthful about whether the guard was hit.
+	if opts.Limit <= 0 || opts.Limit > 1000 {
+		opts.Limit = 50
+	}
+	stages = append(stages, bson.M{"$limit": opts.Limit})
+
+	startTime := time.Now()
+
+	cursor, err := coll.Aggregate(ctx, stages, options.Aggregate().SetAllowDiskUse(true))
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute aggregation: %w", err)
+	}
+	defer cursor.Close(ctx)
+
+	var documents []string
+	var decodeErrors, marshalErrors int
+	for cursor.Next(ctx) {
+		var doc bson.M
+		if err := cursor.Decode(&doc); err != nil {
+			decodeErrors++
+			continue
+		}
+		jsonBytes, err := bson.MarshalExtJSON(doc, true, false)
+		if err != nil {
+			marshalErrors++
+			continue
+		}
+		documents = append(documents, string(jsonBytes))
+	}
+
+	queryTime := time.Since(startTime).Milliseconds()
+
+	var warnings []string
+	if decodeErrors > 0 {
+		warnings = append(warnings, fmt.Sprintf("%d document(s) failed to decode", decodeErrors))
+	}
+	if marshalErrors > 0 {
+		warnings = append(warnings, fmt.Sprintf("%d document(s) failed to marshal to JSON", marshalErrors))
+	}
+
+	total := int64(len(documents))
+	return &types.QueryResult{
+		Documents:   documents,
+		Total:       total,
+		HasMore:     total >= int64(opts.Limit),
 		QueryTimeMs: queryTime,
 		Warnings:    warnings,
 	}, nil
