@@ -319,6 +319,16 @@ type SchemaResult struct {
 	Fields     map[string]SchemaField `json:"fields"`
 }
 
+// AIQueryResult is the result of an AI-assisted query generation (F077).
+type AIQueryResult struct {
+	Raw          string `json:"raw"`          // full model response text
+	Query        string `json:"query"`        // extracted from first fenced code block (Raw fallback if none)
+	Explanation  string `json:"explanation"`  // text outside the code block, trimmed
+	Model        string `json:"model"`        // resolved model identifier used for the call
+	InputTokens  int    `json:"inputTokens"`  // prompt tokens reported by the provider
+	OutputTokens int    `json:"outputTokens"` // completion tokens reported by the provider
+}
+
 // =============================================================================
 // Export/Import Types
 // =============================================================================

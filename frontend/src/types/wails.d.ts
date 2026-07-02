@@ -257,6 +257,19 @@ export interface WailsAppBindings {
   // Server info
   GetServerInfo?(connectionId: string): Promise<ServerInfo>
 
+  // AI query assistant methods (F077)
+  GenerateAIQuery?(
+    connectionId: string,
+    database: string,
+    collection: string,
+    mode: string,
+    prompt: string,
+    model: string
+  ): Promise<AIQueryResult>
+  SetAIAPIKey?(key: string): Promise<void>
+  GetAIAPIKeyStatus?(): Promise<string>
+  ClearAIAPIKey?(): Promise<void>
+
   // Theme methods
   GetThemes?(): Promise<Theme[]>
   GetCurrentTheme?(): Promise<Theme>
@@ -299,6 +312,18 @@ export interface CollectionStats {
   indexCount: number
   totalIndexSize: number
   capped: boolean
+}
+
+/**
+ * AI query generation result (F077)
+ */
+export interface AIQueryResult {
+  raw: string
+  query: string
+  explanation: string
+  model: string
+  inputTokens: number
+  outputTokens: number
 }
 
 /**

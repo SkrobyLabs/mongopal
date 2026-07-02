@@ -59,6 +59,12 @@ const LargeDocIcon = (): JSX.Element => (
   </svg>
 )
 
+const AIIcon = (): JSX.Element => (
+  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
+  </svg>
+)
+
 // ============================================================================
 // Settings Types and Defaults
 // ============================================================================
@@ -78,6 +84,9 @@ export interface AppSettings {
   ldhMaxPagePayloadMB: number       // max page payload for adaptive page size (MB)
   ldhArrayDisplayLimit: number      // array elements shown before truncation
   ldhResponseSizeWarningMB: number  // response size estimate warning threshold (MB)
+  // AI query assistant (F077) — the API key is NEVER stored here, only in the OS keyring
+  aiEnabled: boolean
+  aiModel: 'sonnet' | 'haiku'
 }
 
 const defaultSettings: AppSettings = {
@@ -95,6 +104,9 @@ const defaultSettings: AppSettings = {
   ldhMaxPagePayloadMB: 10,
   ldhArrayDisplayLimit: 20,
   ldhResponseSizeWarningMB: 10,
+  // AI defaults — disabled until the user opts in
+  aiEnabled: false,
+  aiModel: 'sonnet',
 }
 
 const STORAGE_KEY = 'mongopal-settings'
@@ -403,6 +415,153 @@ function LargeDocumentTab({ settings, onChange }: TabContentProps): JSX.Element 
         max={100}
         suffix="MB"
       />
+    </div>
+  )
+}
+
+// ============================================================================
+// AI Tab Component (F077)
+// ============================================================================
+
+type AIKeyStatus = 'env' | 'configured' | 'not_set' | 'error' | 'unknown'
+
+function AITab({ settings, onChange }: TabContentProps): JSX.Element {
+  const [keyStatus, setKeyStatus] = useState<AIKeyStatus>('unknown')
+  const [keyInput, setKeyInput] = useState<string>('')
+  const [busy, setBusy] = useState<boolean>(false)
+  const [message, setMessage] = useState<string | null>(null)
+
+  const refreshStatus = async (): Promise<void> => {
+    try {
+      const status = await window.go?.main?.App?.GetAIAPIKeyStatus?.()
+      setKeyStatus((status as AIKeyStatus) || 'not_set')
+    } catch {
+      setKeyStatus('not_set')
+    }
+  }
+
+  useEffect(() => {
+    void refreshStatus()
+  }, [])
+
+  const fromEnv = keyStatus === 'env'
+
+  const handleSaveKey = async (): Promise<void> => {
+    const trimmed = keyInput.trim()
+    if (!trimmed) return
+    setBusy(true)
+    setMessage(null)
+    try {
+      await window.go?.main?.App?.SetAIAPIKey?.(trimmed)
+      setKeyInput('')
+      setMessage('API key saved')
+      await refreshStatus()
+    } catch (err) {
+      setMessage(`Failed to save key: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handleClearKey = async (): Promise<void> => {
+    if (!window.confirm('Remove the stored Anthropic API key?')) return
+    setBusy(true)
+    setMessage(null)
+    try {
+      await window.go?.main?.App?.ClearAIAPIKey?.()
+      setMessage('API key cleared')
+      await refreshStatus()
+    } catch (err) {
+      setMessage(`Failed to clear key: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const statusLabel =
+    keyStatus === 'env'
+      ? 'Set from environment variable'
+      : keyStatus === 'configured'
+      ? 'Configured (stored in OS keyring)'
+      : keyStatus === 'not_set'
+      ? 'Not set'
+      : keyStatus === 'error'
+      ? 'Keyring error — could not read stored key'
+      : 'Checking…'
+
+  return (
+    <div className="space-y-4">
+      <ToggleSetting
+        checked={settings.aiEnabled}
+        onChange={(e) => onChange('aiEnabled', e.target.checked)}
+        label="Enable AI query assistant"
+        description="Show a sparkle button in the query bar to generate queries from a plain-language description"
+      />
+
+      <div className="py-2">
+        <label className="block text-sm text-text-light mb-1.5">Model</label>
+        <select
+          className="input w-full"
+          value={settings.aiModel}
+          onChange={(e) => onChange('aiModel', e.target.value as 'sonnet' | 'haiku')}
+        >
+          <option value="sonnet">Sonnet (higher quality)</option>
+          <option value="haiku">Haiku (faster, cheaper)</option>
+        </select>
+      </div>
+
+      <div className="py-2 border-t border-border">
+        <label className="block text-sm text-text-light mb-1.5">Anthropic API key</label>
+        <div className="flex items-center gap-2 mb-2">
+          <span className="text-xs text-text-muted">Status:</span>
+          <span
+            className={`text-xs px-1.5 py-0.5 rounded ${
+              keyStatus === 'error'
+                ? 'bg-error/15 text-error'
+                : keyStatus === 'not_set' || keyStatus === 'unknown'
+                ? 'bg-surface-hover text-text-muted'
+                : 'bg-primary/15 text-primary'
+            }`}
+          >
+            {statusLabel}
+          </span>
+        </div>
+        {fromEnv ? (
+          <p className="text-xs text-text-dim">
+            The key is provided by the <code>ANTHROPIC_API_KEY</code> environment variable and cannot be changed here.
+          </p>
+        ) : (
+          <div className="flex items-center gap-2">
+            <input
+              type="password"
+              className="input flex-1"
+              placeholder="sk-ant-..."
+              value={keyInput}
+              onChange={(e) => setKeyInput(e.target.value)}
+              disabled={busy}
+              autoComplete="off"
+            />
+            <button
+              className="btn btn-primary"
+              onClick={handleSaveKey}
+              disabled={busy || !keyInput.trim()}
+            >
+              Set
+            </button>
+            {keyStatus === 'configured' && (
+              <button className="btn btn-ghost text-text-muted" onClick={handleClearKey} disabled={busy}>
+                Clear
+              </button>
+            )}
+          </div>
+        )}
+        {message && <p className="text-xs text-text-dim mt-1.5">{message}</p>}
+      </div>
+
+      <p className="text-xs text-text-dim border-t border-border pt-3">
+        Privacy: only the collection's inferred schema (field names, types, and how often each appears) is sent to
+        Anthropic. Document values, connection URIs, and credentials are never included.
+      </p>
     </div>
   )
 }
@@ -726,7 +885,7 @@ function DeveloperTab(): JSX.Element {
 // Main Settings Component
 // ============================================================================
 
-type TabId = 'appearance' | 'general' | 'editor' | 'safety' | 'largedoc' | 'developer'
+type TabId = 'appearance' | 'general' | 'editor' | 'safety' | 'largedoc' | 'ai' | 'developer'
 
 interface Tab {
   id: TabId
@@ -800,6 +959,7 @@ export default function Settings({ onClose }: SettingsProps): JSX.Element {
     { id: 'editor', label: 'Editor', icon: <EditorIcon /> },
     { id: 'safety', label: 'Safety', icon: <SafetyIcon /> },
     { id: 'largedoc', label: 'Large Docs', icon: <LargeDocIcon /> },
+    { id: 'ai', label: 'AI', icon: <AIIcon /> },
     { id: 'developer', label: 'Developer', icon: <DeveloperIcon /> },
   ]
 
@@ -860,6 +1020,9 @@ export default function Settings({ onClose }: SettingsProps): JSX.Element {
             )}
             {activeTab === 'largedoc' && (
               <LargeDocumentTab settings={settings} onChange={handleChange} />
+            )}
+            {activeTab === 'ai' && (
+              <AITab settings={settings} onChange={handleChange} />
             )}
             {activeTab === 'developer' && (
               <DeveloperTab />

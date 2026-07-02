@@ -68,6 +68,8 @@ describe('Settings', () => {
         ldhMaxPagePayloadMB: 10,
         ldhArrayDisplayLimit: 20,
         ldhResponseSizeWarningMB: 10,
+        aiEnabled: false,
+        aiModel: 'sonnet',
       })
     })
 
@@ -104,6 +106,8 @@ describe('Settings', () => {
         ldhMaxPagePayloadMB: 10,
         ldhArrayDisplayLimit: 20,
         ldhResponseSizeWarningMB: 10,
+        aiEnabled: false,
+        aiModel: 'sonnet',
       })
     })
   })
@@ -124,6 +128,8 @@ describe('Settings', () => {
         ldhMaxPagePayloadMB: 10,
         ldhArrayDisplayLimit: 20,
         ldhResponseSizeWarningMB: 10,
+        aiEnabled: false,
+        aiModel: 'sonnet',
       }
       saveSettings(settings)
 
@@ -512,4 +518,110 @@ describe('Settings', () => {
       expect(screen.getByText('UI Font')).toBeInTheDocument()
     })
   })
+
+  describe('AI tab (F077)', () => {
+    beforeEach(() => {
+      if (window.go?.main?.App) {
+        window.go.main.App.GetAIAPIKeyStatus = vi.fn().mockResolvedValue('not_set')
+        window.go.main.App.SetAIAPIKey = vi.fn().mockResolvedValue(undefined)
+        window.go.main.App.ClearAIAPIKey = vi.fn().mockResolvedValue(undefined)
+      }
+    })
+
+    const openAITab = async (): Promise<void> => {
+      renderWithProviders(<Settings onClose={mockOnClose} />)
+      fireEvent.click(screen.getByRole('button', { name: /^ai$/i }))
+      // Wait for the async status fetch to settle.
+      await screen.findByText('Enable AI query assistant')
+    }
+
+    it('renders AI options and privacy note', async () => {
+      await openAITab()
+      expect(screen.getByText('Enable AI query assistant')).toBeInTheDocument()
+      expect(screen.getByText(/only the collection's inferred schema/i)).toBeInTheDocument()
+      expect(screen.getByText('Anthropic API key')).toBeInTheDocument()
+    })
+
+    it('persists the enable toggle and model to localStorage', async () => {
+      await openAITab()
+
+      const toggle = screen.getByRole('checkbox')
+      fireEvent.click(toggle)
+      let saved = JSON.parse(localStorage.getItem('mongopal-settings') || '{}')
+      expect(saved.aiEnabled).toBe(true)
+
+      const modelSelect = screen.getByRole('combobox')
+      fireEvent.change(modelSelect, { target: { value: 'haiku' } })
+      saved = JSON.parse(localStorage.getItem('mongopal-settings') || '{}')
+      expect(saved.aiModel).toBe('haiku')
+    })
+
+    it('saves the API key via the binding and never to localStorage', async () => {
+      await openAITab()
+
+      const keyInput = screen.getByPlaceholderText(/sk-ant-/i)
+      fireEvent.change(keyInput, { target: { value: 'sk-ant-secret' } })
+      fireEvent.click(screen.getByRole('button', { name: /^set$/i }))
+
+      await waitForBinding(() => {
+        expect(window.go?.main?.App?.SetAIAPIKey).toHaveBeenCalledWith('sk-ant-secret')
+      })
+
+      const stored = JSON.stringify(localStorage)
+      expect(stored).not.toContain('sk-ant-secret')
+    })
+
+    it('clears the API key via the binding when configured', async () => {
+      if (window.go?.main?.App) {
+        window.go.main.App.GetAIAPIKeyStatus = vi.fn().mockResolvedValue('configured')
+      }
+      const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+
+      renderWithProviders(<Settings onClose={mockOnClose} />)
+      fireEvent.click(screen.getByRole('button', { name: /^ai$/i }))
+      await screen.findByText(/Configured \(stored in OS keyring\)/i)
+
+      fireEvent.click(screen.getByRole('button', { name: /^clear$/i }))
+      await waitForBinding(() => {
+        expect(window.go?.main?.App?.ClearAIAPIKey).toHaveBeenCalled()
+      })
+      confirmSpy.mockRestore()
+    })
+
+    it('surfaces a keyring read error status', async () => {
+      if (window.go?.main?.App) {
+        window.go.main.App.GetAIAPIKeyStatus = vi.fn().mockResolvedValue('error')
+      }
+      renderWithProviders(<Settings onClose={mockOnClose} />)
+      fireEvent.click(screen.getByRole('button', { name: /^ai$/i }))
+
+      await screen.findByText(/Keyring error/i)
+      // The input remains available so the user can retry.
+      expect(screen.getByPlaceholderText(/sk-ant-/i)).toBeInTheDocument()
+    })
+
+    it('reflects env-provided key by hiding the input', async () => {
+      if (window.go?.main?.App) {
+        window.go.main.App.GetAIAPIKeyStatus = vi.fn().mockResolvedValue('env')
+      }
+      renderWithProviders(<Settings onClose={mockOnClose} />)
+      fireEvent.click(screen.getByRole('button', { name: /^ai$/i }))
+
+      await screen.findByText(/cannot be changed here/i)
+      expect(screen.queryByPlaceholderText(/sk-ant-/i)).not.toBeInTheDocument()
+    })
+  })
 })
+
+// Small helper to await async binding assertions without importing waitFor twice.
+async function waitForBinding(fn: () => void): Promise<void> {
+  for (let i = 0; i < 50; i++) {
+    try {
+      fn()
+      return
+    } catch {
+      await new Promise((r) => setTimeout(r, 5))
+    }
+  }
+  fn()
+}

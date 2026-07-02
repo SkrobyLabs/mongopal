@@ -9,6 +9,7 @@ import (
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
+	"github.com/peternagy/mongopal/internal/ai"
 	"github.com/peternagy/mongopal/internal/auth"
 	"github.com/peternagy/mongopal/internal/connection"
 	"github.com/peternagy/mongopal/internal/core"
@@ -90,6 +91,7 @@ type ServerStatusInfo = types.ServerStatusInfo
 type ReplicaSetInfo = types.ReplicaSetInfo
 type ReplicaSetMember = types.ReplicaSetMember
 type PerformanceMetrics = performance.Metrics
+type AIQueryResult = types.AIQueryResult
 type Theme = types.Theme
 type ThemeColors = types.ThemeColors
 type ThemeFonts = types.ThemeFonts
@@ -120,6 +122,7 @@ type App struct {
 	performance      *performance.Service
 	auth             *auth.Service
 	theme            *theme.ThemeManager
+	ai               *ai.Service
 }
 
 // NewApp creates a new App instance
@@ -181,6 +184,7 @@ func (a *App) startup(ctx context.Context) {
 	a.database = database.NewService(a.state)
 	a.document = document.NewService(a.state)
 	a.schema = schema.NewService(a.state)
+	a.ai = ai.NewService(a.schema, nil)
 	a.export = export.NewService(a.state, a.connStore)
 	a.importer = importer.NewService(a.state, a.connStore)
 	a.script = script.NewService(a.connStore)
@@ -500,6 +504,26 @@ func (a *App) InferCollectionSchema(connID, dbName, collName string, sampleSize 
 
 func (a *App) ExportSchemaAsJSON(jsonContent, defaultFilename string) error {
 	return schema.ExportSchemaAsJSON(a.state.Ctx, jsonContent, defaultFilename)
+}
+
+// =============================================================================
+// AI Query Assistant Methods (F077)
+// =============================================================================
+
+func (a *App) GenerateAIQuery(connID, dbName, collName, mode, prompt, model string) (*AIQueryResult, error) {
+	return a.ai.GenerateQuery(connID, dbName, collName, mode, prompt, model)
+}
+
+func (a *App) SetAIAPIKey(key string) error {
+	return ai.SaveAPIKey(key)
+}
+
+func (a *App) GetAIAPIKeyStatus() string {
+	return ai.KeyStatus()
+}
+
+func (a *App) ClearAIAPIKey() error {
+	return ai.ClearAPIKey()
 }
 
 // =============================================================================

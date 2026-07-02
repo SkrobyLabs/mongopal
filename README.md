@@ -16,6 +16,7 @@ A lightweight, cross-platform MongoDB GUI for exploring, viewing, and editing do
 - Export/import databases and collections with progress tracking and ETA
 - Query filtering and sorting with mongosh script support
 - SQL query mode with live mongosh preview and schema-aware autocomplete (SELECT/WHERE/ORDER BY/GROUP BY)
+- AI query assistant: describe a query in plain words and generate it (mongo or SQL); schema-only prompts, Anthropic API key stored in the OS keyring
 - Secure credential storage (OS keyring with encrypted fallback)
 - Multi-tab interface with pinning, renaming, drag-reorder
 - Full keyboard navigation throughout the app
@@ -119,7 +120,8 @@ mongopal/
 │   ├── schema/             # Schema inference and export
 │   ├── export/             # Database/collection export
 │   ├── importer/           # Database/collection import
-│   └── script/             # Mongosh script execution
+│   ├── script/             # Mongosh script execution
+│   └── ai/                 # AI query assistant (Anthropic provider, keyring key, prompt builder)
 │
 ├── frontend/
 │   ├── src/
@@ -131,6 +133,7 @@ mongopal/
 │   │   │   ├── CollectionView.tsx    # Document list with filters
 │   │   │   ├── DocumentEditView.tsx  # Monaco editor
 │   │   │   ├── SchemaView.tsx        # Collection schema analysis
+│   │   │   ├── AIQueryPanel.tsx       # AI query assistant (one-shot, schema-aware)
 │   │   │   ├── KeyboardShortcuts.tsx # Shortcuts reference modal
 │   │   │   ├── ActionableError.tsx   # Error hints with recovery
 │   │   │   ├── Import/ExportModals   # Data transfer

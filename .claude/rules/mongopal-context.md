@@ -37,6 +37,7 @@ Lightweight, cross-platform MongoDB GUI for exploring, viewing, and editing docu
 | `internal/importer` | Database/collection import (ZIP, JSON, CSV) | `database.go`, `collection.go`, `helpers.go`, `json.go`, `csv.go`, `detect.go` |
 | `internal/script` | Mongosh script execution | `mongosh.go` |
 | `internal/performance` | Go runtime and connection metrics | `metrics.go` |
+| `internal/ai` | AI query assistant: Anthropic provider, keyring-only API key, schema-aware prompt builder (F077) | `provider.go`, `anthropic.go`, `apikey.go`, `prompt.go`, `parse.go`, `service.go` |
 
 ### Frontend Core
 | Purpose | File |
@@ -72,6 +73,7 @@ Lightweight, cross-platform MongoDB GUI for exploring, viewing, and editing docu
 | Actionable error display | `frontend/src/components/ActionableError.tsx` |
 | Performance metrics panel | `frontend/src/components/PerformancePanel.tsx` |
 | Server info diagnostics modal | `frontend/src/components/ServerInfoModal.tsx` |
+| AI query assistant panel (F077) | `frontend/src/components/AIQueryPanel.tsx` |
 
 ### Contexts
 | Purpose | File |
@@ -244,6 +246,7 @@ The backend uses a thin facade pattern:
 | Import | ImportDatabases, ImportSelectiveDatabases, DryRunSelectiveImport, ImportCollections, PreviewImportFile, ImportJSON, DryRunImportJSON, PreviewJSONFile, DetectFileFormat, GetImportFilePath, PreviewCSVFile, ImportCSV, DryRunImportCSV, ImportWithMongorestore | `internal/importer`, `internal/export` |
 | Script | ExecuteScript, CheckMongoshAvailable | `internal/script` |
 | Performance | GetPerformanceMetrics, ForceGC | `internal/performance` |
+| AI | GenerateAIQuery, SetAIAPIKey, GetAIAPIKeyStatus, ClearAIAPIKey | `internal/ai` |
 
 > **Maintenance**: Update this file AND `README.md` when codebase structure changes.
 

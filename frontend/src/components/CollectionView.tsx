@@ -22,6 +22,7 @@ import SavedQueriesDropdown from './SavedQueriesDropdown'
 import SaveQueryModal from './SaveQueryModal'
 import SavedQueriesManager from './SavedQueriesManager'
 import ColumnVisibilityDropdown from './ColumnVisibilityDropdown'
+import AIQueryPanel from './AIQueryPanel'
 import { loadSettings, AppSettings } from './Settings'
 import { useConnection } from './contexts/ConnectionContext'
 import { useTab } from './contexts/TabContext'
@@ -61,7 +62,7 @@ export interface CollectionViewProps {
 /**
  * View mode options for document display
  */
-type ViewMode = 'table' | 'json' | 'explain'
+type ViewMode = 'table' | 'json' | 'explain' | 'ai'
 
 /**
  * Props for icon components
@@ -361,6 +362,33 @@ export default function CollectionView({
   // --- Remaining local state ---
 
   const [viewMode, setViewMode] = useState<ViewMode>('table')
+
+  // AI query assistant (F077). Settings are read on mount (localStorage-backed,
+  // same mechanism other consumers use). The assistant is one-shot: opening
+  // switches to a temporary 'ai' view; closing restores the previous view.
+  const [aiSettings] = useState<Pick<AppSettings, 'aiEnabled' | 'aiModel'>>(() => {
+    const s = loadSettings()
+    return { aiEnabled: s.aiEnabled, aiModel: s.aiModel }
+  })
+  const [aiAssistOpen, setAiAssistOpen] = useState<boolean>(false)
+  const prevViewModeRef = useRef<ViewMode>('table')
+
+  const closeAiAssist = useCallback((): void => {
+    setAiAssistOpen(false)
+    // Avoid re-triggering explain on restore.
+    const restore = prevViewModeRef.current === 'explain' ? 'table' : prevViewModeRef.current
+    setViewMode(restore)
+  }, [])
+
+  const toggleAiAssist = useCallback((): void => {
+    if (aiAssistOpen) {
+      closeAiAssist()
+    } else {
+      prevViewModeRef.current = viewMode
+      setAiAssistOpen(true)
+      setViewMode('ai')
+    }
+  }, [aiAssistOpen, viewMode, closeAiAssist])
 
   // Monaco editor refs
   const monacoRef = useRef<MonacoInstance | null>(null)
@@ -903,6 +931,27 @@ export default function CollectionView({
                   SQL
                 </button>
               </div>
+              {/* AI query assistant sparkle (F077) — only when enabled in settings */}
+              {aiSettings.aiEnabled && (
+                <button
+                  className={`icon-btn p-1.5 hover:bg-surface-hover text-text-muted hover:text-primary ${
+                    aiAssistOpen ? 'text-primary bg-surface-hover' : ''
+                  } ${!queryExec.isConnected ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  onClick={() => queryExec.isConnected && toggleAiAssist()}
+                  disabled={!queryExec.isConnected}
+                  aria-pressed={aiAssistOpen}
+                  title={!queryExec.isConnected ? 'Connect to database first' : 'Generate query with AI'}
+                >
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z"
+                    />
+                  </svg>
+                </button>
+              )}
               {queryExec.loading ? (
                 <button
                   className="btn btn-secondary flex items-center gap-1.5 text-error hover:text-red-300"
@@ -1124,7 +1173,7 @@ export default function CollectionView({
       <div className="flex-shrink-0 flex items-center justify-between px-3 py-1.5 border-b border-border bg-surface text-sm">
         <div className="flex items-center gap-3">
           <div className="flex gap-1" role="tablist" aria-label="View mode">
-            {(['table', 'json', 'explain'] as ViewMode[]).map((mode) => (
+            {([...(['table', 'json', 'explain'] as ViewMode[]), ...(aiAssistOpen ? (['ai'] as ViewMode[]) : [])]).map((mode) => (
               <button
                 key={mode}
                 className={`view-mode-btn px-2 py-1 rounded text-xs capitalize ${
@@ -1135,9 +1184,15 @@ export default function CollectionView({
                 onClick={() => {
                   if (mode === 'explain') {
                     if (!queryExec.isConnected) return
+                    setAiAssistOpen(false)
                     setViewMode('explain')
                     queryExec.explainQuery()
+                  } else if (mode === 'ai') {
+                    setViewMode('ai')
                   } else {
+                    // Switching to a data view closes the one-shot assistant so
+                    // the AI tab and sparkle pressed-state don't linger.
+                    setAiAssistOpen(false)
                     setViewMode(mode)
                   }
                 }}
@@ -1145,7 +1200,7 @@ export default function CollectionView({
                 role="tab"
                 aria-selected={viewMode === mode}
               >
-                {mode}
+                {mode === 'ai' ? 'AI' : mode}
               </button>
             ))}
           </div>
@@ -1159,7 +1214,7 @@ export default function CollectionView({
         <div
           className={`flex items-center gap-2 text-text-muted text-xs ${
             queryExec.paginationResetHighlight ? 'pagination-reset-highlight' : ''
-          } ${viewMode === 'explain' ? 'invisible' : ''}`}
+          } ${viewMode === 'explain' || viewMode === 'ai' ? 'invisible' : ''}`}
         >
           {queryExec.resultKind === 'aggregate' ? (
             <span>
@@ -1450,6 +1505,22 @@ export default function CollectionView({
               Run Query
             </button>
           </div>
+        ) : viewMode === 'ai' ? (
+          <AIQueryPanel
+            connectionId={connectionId}
+            database={database}
+            collection={collection}
+            queryMode={queryExec.queryMode}
+            model={aiSettings.aiModel}
+            onUseQuery={(q) => {
+              if (queryExec.queryMode === 'sql') {
+                queryExec.setSqlQuery(q)
+              } else {
+                queryExec.setQuery(q)
+              }
+            }}
+            onClose={closeAiAssist}
+          />
         ) : queryExec.loading ? (
           <div className="h-full flex flex-col items-center justify-center text-text-muted gap-3">
             <div className="spinner" />
