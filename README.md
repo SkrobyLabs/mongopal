@@ -1,208 +1,62 @@
+<!-- solution-docs:begin readme -->
 # MongoPal
 
-A lightweight, cross-platform MongoDB GUI for exploring, viewing, and editing documents.
+A lightweight, cross-platform MongoDB GUI for exploring, viewing, and editing documents —
+a fast native desktop client for the everyday **explore → query → edit → move data** loop.
 
-## Features
+## Who it's for
 
-- Connect to MongoDB instances via connection URI
-- Organize connections into nested folders with drag-and-drop
-- Browse databases and collections in tree view
-- View documents in Table or JSON format with pagination
-- Smart column widths based on field names and types
-- Edit documents with Monaco editor (syntax highlighting, formatting)
-- Insert new documents with JSON validation
-- Bulk operations with keyboard shortcuts (select, delete multiple)
-- Collection schema analysis with field type distribution
-- Export/import databases and collections with progress tracking and ETA
-- Query filtering and sorting with mongosh script support
-- SQL query mode with live mongosh preview and schema-aware autocomplete (SELECT/WHERE/ORDER BY/GROUP BY)
-- AI query assistant: describe a query in plain words and generate it (mongo or SQL); schema-only prompts, Anthropic API key stored in the OS keyring
-- Secure credential storage (OS keyring with encrypted fallback)
-- Multi-tab interface with pinning, renaming, drag-reorder
-- Full keyboard navigation throughout the app
-- Notification history with actionable error hints
-- Dark theme optimized for extended use (WCAG AA compliant)
+Developers and data-focused engineers who read from and write to MongoDB regularly and
+want a keyboard-driven desktop GUI that starts instantly and keeps credentials safe. It
+assumes you already know MongoDB.
 
-## Technology Stack
+## Why it exists
 
-- **Backend**: Go 1.24+
-- **MongoDB Driver**: mongo-go-driver
-- **Frontend**: React 18 + TypeScript 5.9+ (strict mode) + Vite
-- **Styling**: TailwindCSS
-- **Desktop Framework**: Wails v2
+Day-to-day MongoDB work means bouncing between the `mongosh` shell (powerful but unfriendly
+for browsing and editing), throwaway scripts, and heavyweight commercial GUIs oriented
+toward database administration. MongoPal deliberately sits in the middle: lighter and
+faster to launch than the big admin suites, but far more comfortable than the shell for
+looking at data, fixing a document, or moving a collection between environments. Its key
+differentiator is treating **credential confidentiality as a core guarantee** — secrets are
+encrypted at rest with keys held in the OS keyring, never written in plaintext, and kept
+out of logs and process listings. It is a single-user desktop tool, not a multi-user admin
+platform; see [What it is (and isn't)](docs/overview.md).
 
-## Prerequisites
+## Key features
 
-- Go 1.24 or later
-- Node.js 18 or later
-- Wails CLI (`make install-wails`, pinned to Wails v2.11.0)
-
-## Development
-
-### Install dependencies
-
-```bash
-make install
-```
-
-### Run in development mode
-
-```bash
-make dev
-```
-
-This starts the app with hot reload enabled for both Go and React.
-
-### Build for production
-
-```bash
-make build
-```
-
-The binary will be created in `build/bin/`.
-
-### Build for specific platforms
-
-```bash
-# macOS amd64 and arm64 app bundles
-make build-darwin
-
-# Windows
-make build-windows
-
-# Linux
-make build-linux
-```
-
-### Version metadata
-
-MongoPal builds include runtime version metadata exposed through Wails via `GetVersionInfo`. Local builds use the exact git tag when the current commit is tagged, otherwise they report the current commit as a development build. Dirty working trees are marked as development builds.
-
-## Releases
-
-Pull requests run the reusable GitHub Actions build workflow automatically, and maintainers can trigger it manually from the Actions tab. The workflow runs unit tests, TypeScript typecheck, `go vet`, and frontend build before platform packaging.
-
-To publish a release:
-
-```bash
-git tag -a vX.Y.Z -m "MongoPal vX.Y.Z"
-git push origin vX.Y.Z
-```
-
-Pushing a `v*` tag runs the release workflow, builds platform artifacts, generates GitHub release notes, and publishes a release with:
-
-- `MongoPal-linux-amd64.zip`
-- `MongoPal-windows-amd64.zip`
-- `MongoPal-macos-amd64.zip`
-- `MongoPal-macos-arm64.zip`
-
-Release builds patch `wails.json` product metadata from the tag version before packaging. macOS artifacts are currently unsigned and not notarized; users may need to allow the app in macOS Privacy & Security or remove the quarantine attribute manually.
-
-## Project Structure
-
-```
-mongopal/
-├── main.go                 # Entry point, Wails app setup
-├── app.go                  # Thin facade for Wails bindings
-├── app_test.go             # Backend unit tests
-├── integration_test.go     # Integration tests (requires Docker)
-├── wails.json              # Wails configuration
-├── Makefile                # Build automation
-│
-├── internal/               # Backend packages
-│   ├── core/               # App state and event emitter
-│   ├── types/              # Shared type definitions
-│   ├── credential/         # Password/keyring management
-│   ├── storage/            # Config file I/O, connections
-│   ├── connection/         # Connect, Disconnect, TestConnection, GetServerInfo
-│   ├── database/           # List databases/collections, drop ops
-│   ├── document/           # Document CRUD operations
-│   ├── schema/             # Schema inference and export
-│   ├── export/             # Database/collection export
-│   ├── importer/           # Database/collection import
-│   ├── script/             # Mongosh script execution
-│   └── ai/                 # AI query assistant (Anthropic provider, keyring key, prompt builder)
-│
-├── frontend/
-│   ├── src/
-│   │   ├── App.tsx         # Root component with state management
-│   │   ├── types/          # TypeScript type definitions
-│   │   │   └── wails.d.ts  # Centralized Wails bindings
-│   │   ├── components/     # React components (TypeScript)
-│   │   │   ├── Sidebar.tsx           # Folder/connection tree with drag-drop
-│   │   │   ├── CollectionView.tsx    # Document list with filters
-│   │   │   ├── DocumentEditView.tsx  # Monaco editor
-│   │   │   ├── SchemaView.tsx        # Collection schema analysis
-│   │   │   ├── AIQueryPanel.tsx       # AI query assistant (one-shot, schema-aware)
-│   │   │   ├── KeyboardShortcuts.tsx # Shortcuts reference modal
-│   │   │   ├── ActionableError.tsx   # Error hints with recovery
-│   │   │   ├── Import/ExportModals   # Data transfer
-│   │   │   ├── contexts/             # React contexts for state
-│   │   │   └── ...
-│   │   ├── hooks/          # Custom React hooks (useProgressETA)
-│   │   └── utils/          # Query parsing, schema utils, error parsing, autocomplete
-│   │       └── sqlConverter/  # SQL→MongoDB converter (tokenizer/parser/transformer/serializer)
-│   └── ...
-│
-├── .claude/                # Claude Code configuration
-│   ├── rules/              # Project context
-│   └── skills/             # Custom skills (pr-summary)
-│
-└── build/
-    └── bin/                # Built binaries
-```
-
-## Testing
-
-### Run all tests (unit + integration)
-```bash
-make test
-```
-
-### Unit tests only (used by commit hook)
-```bash
-make test-unit              # All unit tests
-make test-unit-frontend     # Frontend only (includes TypeScript typecheck)
-make test-unit-go           # Go only
-make typecheck              # TypeScript type checking
-make test-watch             # Frontend watch mode
-```
-
-### Integration tests (requires Docker)
-```bash
-make test-integration              # All integration tests
-make test-integration-go           # Go only (testcontainers)
-make test-integration-frontend     # Frontend only
-```
-
-### Coverage reports
-```bash
-make test-coverage
-```
-
-## Keyboard Shortcuts
-
-| Shortcut | Action |
-|----------|--------|
-| `Cmd+/` | Show keyboard shortcuts reference |
-| `Cmd+S` | Save document |
-| `Cmd+Enter` | Execute query |
-| `Cmd+W` | Close current tab |
-| `Cmd+Shift+[` | Previous tab |
-| `Cmd+Shift+]` | Next tab |
-| `Cmd+A` | Select all documents (in bulk mode) |
-| `Delete` | Delete selected documents |
-| `Escape` | Close panel / cancel edit |
-| `↑↓←→` | Navigate sidebar tree |
-| `Enter` | Expand/collapse or open item |
-| `Home/End` | Jump to first/last item |
+- **[Connection management & security](docs/features/connection-management.md)** — organize
+  many connections in folders; credentials encrypted with keys in the OS keyring; SSH, TLS,
+  and proxy support.
+- **[Document browsing & editing](docs/features/document-browsing.md)** — table and JSON
+  views, Monaco editor, bulk delete, lossless Extended JSON round-trips.
+- **[Query modes](docs/features/query-modes.md)** — native filter, aggregation pipelines,
+  mongosh scripts, and read-only SQL with live preview.
+- **[AI query assistant](docs/features/ai-query-assistant.md)** — describe a query in plain
+  language; schema-only prompts, key kept in the OS keyring, data never sent.
+- **[Schema analysis](docs/features/schema-analysis.md)** — infer field types and
+  frequencies by sampling; export as JSON; collection profiling.
+- **[Export & import](docs/features/export-import.md)** — JSON, CSV, and BSON
+  (mongodump/mongorestore) with progress, ETA, pause/resume, dry-run, and archive preview.
+- **[Diagnostics & monitoring](docs/features/diagnostics-and-monitoring.md)** — indexes,
+  explain plans, collection stats, server info, runtime metrics, and debug logging.
+- **[Workspace, sessions & preferences](docs/features/workspace-and-sessions.md)** —
+  multi-tab UI, session restore, keyboard navigation, notifications, settings, and theming.
 
 ## Documentation
 
-For detailed project context and architecture, see `.claude/rules/mongopal-context.md`.
-
-> **Maintenance**: Update this file AND `.claude/rules/mongopal-context.md` when codebase structure changes.
+| I want to… | Read this |
+|------------|-----------|
+| Understand what this solves and its scope | [Overview](docs/overview.md) |
+| Understand the architecture | [Architecture](docs/architecture.md) |
+| Understand a specific feature | [Feature docs](docs/features/) |
+| Know why key choices were made | [Decisions](docs/decisions.md) |
+| Learn MongoPal-specific terms | [Glossary](docs/glossary.md) |
+| Build, run, test, or release locally | [Contributing](CONTRIBUTING.md) |
+| Get the file-level codebase map (AI/agent context) | [`.claude/rules/mongopal-context.md`](.claude/rules/mongopal-context.md) |
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
+
+_Generated by solution-docs against commit `1cc8ae0` on 2026-07-03._
+<!-- solution-docs:end readme -->
