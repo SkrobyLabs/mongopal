@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -35,15 +37,54 @@ func NewService(connStore *storage.ConnectionService) *Service {
 
 // CheckMongoshAvailable checks if mongosh is installed and available.
 func CheckMongoshAvailable() (bool, string) {
-	// Try mongosh first (modern MongoDB shell)
-	if path, err := exec.LookPath("mongosh"); err == nil {
-		return true, path
+	executablePath, _ := os.Executable()
+	path := findMongoShell(executablePath, runtime.GOOS, exec.LookPath)
+	return path != "", path
+}
+
+// findMongoShell resolves the modern shell before falling back to the legacy
+// mongo shell. Desktop applications launched outside a terminal often receive
+// a minimal PATH, especially on macOS, so also check beside the application
+// executable and in the standard package-manager installation directories.
+func findMongoShell(
+	executablePath string,
+	goos string,
+	lookPath func(string) (string, error),
+) string {
+	names := []string{"mongosh", "mongo"}
+	if goos == "windows" {
+		names = []string{"mongosh.exe", "mongo.exe"}
 	}
-	// Fall back to legacy mongo shell
-	if path, err := exec.LookPath("mongo"); err == nil {
-		return true, path
+
+	for _, name := range names {
+		candidates := []string{name}
+		if executablePath != "" {
+			candidates = append(candidates, filepath.Join(filepath.Dir(executablePath), name))
+		}
+
+		switch goos {
+		case "darwin":
+			candidates = append(candidates,
+				filepath.Join("/opt/homebrew/bin", name),
+				filepath.Join("/usr/local/bin", name),
+				filepath.Join("/opt/local/bin", name),
+			)
+		case "linux":
+			candidates = append(candidates,
+				filepath.Join("/usr/local/bin", name),
+				filepath.Join("/usr/bin", name),
+				filepath.Join("/snap/bin", name),
+			)
+		}
+
+		for _, candidate := range candidates {
+			if path, err := lookPath(candidate); err == nil {
+				return path
+			}
+		}
 	}
-	return false, ""
+
+	return ""
 }
 
 // ExecuteScript executes a MongoDB shell script using mongosh.

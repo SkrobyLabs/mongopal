@@ -1,9 +1,89 @@
 package script
 
 import (
+	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestFindMongoShellChecksDesktopInstallLocations(t *testing.T) {
+	appPath := filepath.Join(string(filepath.Separator), "Applications", "MongoPal.app", "Contents", "MacOS", "MongoPal")
+	adjacentPath := filepath.Join(filepath.Dir(appPath), "mongosh")
+
+	tests := []struct {
+		name      string
+		available string
+		want      string
+	}{
+		{
+			name:      "PATH takes precedence",
+			available: "mongosh",
+			want:      "mongosh",
+		},
+		{
+			name:      "shell beside application executable",
+			available: adjacentPath,
+			want:      adjacentPath,
+		},
+		{
+			name:      "Intel Homebrew installation",
+			available: "/usr/local/bin/mongosh",
+			want:      "/usr/local/bin/mongosh",
+		},
+		{
+			name:      "Apple Silicon Homebrew installation",
+			available: "/opt/homebrew/bin/mongosh",
+			want:      "/opt/homebrew/bin/mongosh",
+		},
+		{
+			name:      "legacy shell fallback",
+			available: "mongo",
+			want:      "mongo",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			lookPath := func(candidate string) (string, error) {
+				if candidate == tt.available {
+					return candidate, nil
+				}
+				return "", errors.New("not found")
+			}
+
+			if got := findMongoShell(appPath, "darwin", lookPath); got != tt.want {
+				t.Errorf("findMongoShell() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFindMongoShellPrefersModernShellAcrossAllLocations(t *testing.T) {
+	var checked []string
+	lookPath := func(candidate string) (string, error) {
+		checked = append(checked, candidate)
+		switch candidate {
+		case "mongo", "/usr/local/bin/mongosh":
+			return candidate, nil
+		default:
+			return "", errors.New("not found")
+		}
+	}
+
+	got := findMongoShell("/Applications/MongoPal", "darwin", lookPath)
+	if got != "/usr/local/bin/mongosh" {
+		t.Errorf("findMongoShell() = %q, want modern shell", got)
+	}
+	if len(checked) == 0 {
+		t.Fatal("expected lookup candidates to be checked")
+	}
+	for _, candidate := range checked {
+		if candidate == "mongo" {
+			t.Fatalf("legacy shell checked before modern locations: %v", checked)
+		}
+	}
+}
 
 func TestBuildWrappedScript(t *testing.T) {
 	got := buildWrappedScript("db.Builds.aggregate([{ $count: \"n\" }])")
