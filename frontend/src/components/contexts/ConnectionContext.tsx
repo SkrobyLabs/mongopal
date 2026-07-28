@@ -28,6 +28,13 @@ export interface Folder {
   parentId?: string
 }
 
+export interface DatabaseInfo {
+  name: string
+  sizeOnDisk?: number
+  empty?: boolean
+  lastAccessedAt?: string
+}
+
 /**
  * Go bindings interface for connection operations (local partial type)
  */
@@ -48,7 +55,7 @@ interface ConnectionAppBindings {
   UpdateFolder?: (folderId: string, name: string, parentId: string) => Promise<void>
 
   // Database/collection operations
-  ListDatabases?: (connId: string) => Promise<{ name: string; sizeOnDisk: number; empty: boolean }[]>
+  ListDatabases?: (connId: string) => Promise<DatabaseInfo[]>
   DropDatabase?: (connId: string, dbName: string) => Promise<void>
   DropCollection?: (connId: string, dbName: string, collName: string) => Promise<void>
   ClearCollection?: (connId: string, dbName: string, collName: string) => Promise<void>
@@ -80,7 +87,7 @@ export interface ConnectionContextValue {
   disconnectOthers: (keepConnId: string, onOtherTabsClose?: (keepConnId: string) => void) => Promise<void>
   deleteConnection: (connId: string) => Promise<boolean>
   duplicateConnection: (connId: string) => Promise<void>
-  refreshConnection: (connId: string) => Promise<void>
+  refreshConnection: (connId: string) => Promise<DatabaseInfo[] | null>
 
   // Database/collection actions
   dropDatabase: (connId: string, dbName: string) => Promise<void>
@@ -278,18 +285,20 @@ export function ConnectionProvider({ children }: ConnectionProviderProps): React
     }
   }, [connections, loadConnections, notify])
 
-  const refreshConnection = useCallback(async (connId: string): Promise<void> => {
+  const refreshConnection = useCallback(async (connId: string): Promise<DatabaseInfo[] | null> => {
     const go = getGo()
     if (go?.ListDatabases) {
       try {
-        await go.ListDatabases(connId)
+        const databases = await go.ListDatabases(connId)
         notify.info('Connection refreshed')
+        return databases || []
       } catch (err) {
         console.error('Failed to refresh:', err)
         const errorMessage = err instanceof Error ? err.message : String(err)
         notify.error(getErrorSummary(errorMessage))
       }
     }
+    return null
   }, [notify])
 
   const dropDatabase = useCallback(async (connId: string, dbName: string): Promise<void> => {

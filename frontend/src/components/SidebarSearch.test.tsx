@@ -392,6 +392,25 @@ describe('Sidebar Search', () => {
     expect(findTreeItemWithText(container, 'myapp_production')).toBe(false)
   })
 
+  it('updates the database tree when a connection is refreshed', async () => {
+    const { container } = render(<Sidebar {...defaultProps} />)
+    const productionServer = getTreeItemWithText(container, 'Production Server')
+
+    fireEvent.doubleClick(productionServer)
+    await screen.findByText('myapp_production')
+
+    mockRefreshConnection.mockResolvedValueOnce([
+      { name: 'myapp_production' },
+      { name: 'new_database' },
+    ])
+    fireEvent.contextMenu(productionServer)
+    fireEvent.click(screen.getByText('Refresh'))
+
+    await screen.findByText('new_database')
+    expect(mockRefreshConnection).toHaveBeenCalledWith('conn1')
+    expect(findTreeItemWithText(container, 'myapp_staging')).toBe(false)
+  })
+
   it('connects a disconnected connection on double click', () => {
     const { container } = render(<Sidebar {...defaultProps} />)
     const developmentServer = getTreeItemWithText(container, 'Development Server')

@@ -951,9 +951,16 @@ export default function Sidebar({
       })
   }
 
+  const handleRefreshConnection = useCallback(async (connId: string): Promise<void> => {
+    const refreshedDatabases = await refreshConnection(connId)
+    if (refreshedDatabases !== null) {
+      setDatabases(prev => ({ ...prev, [connId]: refreshedDatabases }))
+    }
+  }, [refreshConnection])
+
   const handleRefreshConnections = (items: SidebarSelectionItem[]): void => {
     items.forEach(item => {
-      refreshConnection(item.connectionId)
+      void handleRefreshConnection(item.connectionId)
     })
   }
 
@@ -1291,7 +1298,7 @@ export default function Sidebar({
         onDelete={() => onDeleteConnection(conn.id)}
         onDuplicate={() => duplicateConnection(conn.id)}
         onCopyURI={() => handleCopyURI(conn)}
-        onRefresh={() => refreshConnection(conn.id)}
+        onRefresh={() => void handleRefreshConnection(conn.id)}
         onShowServerInfo={() => onShowServerInfo?.(conn.id, conn.name)}
         onDragStart={handleConnectionDragStart}
         onDragEnd={handleConnectionDragEnd}
