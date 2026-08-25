@@ -19,32 +19,34 @@ const DefaultConnectTimeout = 10 * time.Second
 
 // AppState holds the shared application state.
 type AppState struct {
-	Clients          map[string]*mongo.Client        // Active connections by ID
-	Connecting       map[string]bool                 // Connection IDs currently being connected (to prevent races)
-	SavedConnections []types.SavedConnection         // In-memory cache of saved connections
-	Folders          []types.Folder                  // Connection folders
-	ConfigDir        string                          // Config directory path
-	Mu               sync.RWMutex
-	CancelMu         sync.Mutex                      // Mutex for export/import cancel functions
-	ExportCancels    map[string]context.CancelFunc   // Cancel functions for ongoing exports (keyed by export ID)
-	ImportCancel     context.CancelFunc              // Cancel function for ongoing import
-	ExportPause      *PauseController                // Pause controller for export operations
-	ImportPause      *PauseController                // Pause controller for import operations
-	Ctx              context.Context                 // Wails context
-	DisableEvents    bool                            // Disable event emission (for tests)
-	Emitter          EventEmitter                    // Event emitter for UI notifications
+	Clients            map[string]*mongo.Client      // Active connections by ID
+	Connecting         map[string]bool               // Connection IDs currently being connected (to prevent races)
+	connectingAttempts map[string]*ConnectionAttempt // Cancellable connection attempts, protected by Mu
+	SavedConnections   []types.SavedConnection       // In-memory cache of saved connections
+	Folders            []types.Folder                // Connection folders
+	ConfigDir          string                        // Config directory path
+	Mu                 sync.RWMutex
+	CancelMu           sync.Mutex                    // Mutex for export/import cancel functions
+	ExportCancels      map[string]context.CancelFunc // Cancel functions for ongoing exports (keyed by export ID)
+	ImportCancel       context.CancelFunc            // Cancel function for ongoing import
+	ExportPause        *PauseController              // Pause controller for export operations
+	ImportPause        *PauseController              // Pause controller for import operations
+	Ctx                context.Context               // Wails context
+	DisableEvents      bool                          // Disable event emission (for tests)
+	Emitter            EventEmitter                  // Event emitter for UI notifications
 }
 
 // NewAppState creates a new AppState with initialized maps.
 func NewAppState() *AppState {
 	return &AppState{
-		Clients:          make(map[string]*mongo.Client),
-		Connecting:       make(map[string]bool),
-		SavedConnections: []types.SavedConnection{},
-		Folders:          []types.Folder{},
-		ExportCancels:    make(map[string]context.CancelFunc),
-		ExportPause:      NewPauseController(),
-		ImportPause:      NewPauseController(),
+		Clients:            make(map[string]*mongo.Client),
+		Connecting:         make(map[string]bool),
+		connectingAttempts: make(map[string]*ConnectionAttempt),
+		SavedConnections:   []types.SavedConnection{},
+		Folders:            []types.Folder{},
+		ExportCancels:      make(map[string]context.CancelFunc),
+		ExportPause:        NewPauseController(),
+		ImportPause:        NewPauseController(),
 	}
 }
 
@@ -57,22 +59,48 @@ func (e *ConnectionInProgressError) Error() string {
 	return "connection attempt already in progress for " + e.ConnID
 }
 
-// StartConnecting marks a connection as being connected. Returns error if already connecting.
-func (s *AppState) StartConnecting(connID string) error {
+// ConnectionAttempt identifies one in-flight connection attempt. Its identity
+// prevents an older completion from changing the state of a newer attempt.
+type ConnectionAttempt struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+}
+
+// Context is cancelled when the attempt is detached by disconnect or shutdown.
+func (a *ConnectionAttempt) Context() context.Context { return a.ctx }
+
+// DetachedConnection is a logical detach performed under AppState.Mu. Call
+// Cancel and clean up Client only after the state lock has been released.
+type DetachedConnection struct {
+	ID     string
+	Client *mongo.Client
+	Cancel context.CancelFunc
+}
+
+// StartConnecting registers and returns a cancellable attempt. Returns an
+// error if another attempt for the same connection is already registered.
+func (s *AppState) StartConnecting(connID string) (*ConnectionAttempt, error) {
 	s.Mu.Lock()
 	defer s.Mu.Unlock()
 	if s.Connecting[connID] {
-		return &ConnectionInProgressError{ConnID: connID}
+		return nil, &ConnectionInProgressError{ConnID: connID}
 	}
+	ctx, cancel := context.WithCancel(context.Background())
+	attempt := &ConnectionAttempt{ctx: ctx, cancel: cancel}
 	s.Connecting[connID] = true
-	return nil
+	s.connectingAttempts[connID] = attempt
+	return attempt, nil
 }
 
-// FinishConnecting marks a connection attempt as finished.
-func (s *AppState) FinishConnecting(connID string) {
+// FinishConnecting removes an attempt only when it is still the current
+// attempt for connID. This makes delayed completion ABA-safe.
+func (s *AppState) FinishConnecting(connID string, attempt *ConnectionAttempt) {
 	s.Mu.Lock()
 	defer s.Mu.Unlock()
-	delete(s.Connecting, connID)
+	if s.connectingAttempts[connID] == attempt {
+		delete(s.connectingAttempts, connID)
+		delete(s.Connecting, connID)
+	}
 }
 
 // GetClient returns the MongoDB client for a connection, or error if not connected.
@@ -86,25 +114,60 @@ func (s *AppState) GetClient(connID string) (*mongo.Client, error) {
 	return client, nil
 }
 
-// SetClient stores a client for a connection ID.
-func (s *AppState) SetClient(connID string, client *mongo.Client) {
+// PublishClient conditionally installs a client for the current attempt. It
+// returns a replaced client for cleanup by the caller, after releasing Mu.
+func (s *AppState) PublishClient(connID string, attempt *ConnectionAttempt, client *mongo.Client) (*mongo.Client, bool) {
 	s.Mu.Lock()
 	defer s.Mu.Unlock()
-	// Disconnect existing client if any
-	if existing, ok := s.Clients[connID]; ok {
-		existing.Disconnect(context.Background())
+	if s.connectingAttempts[connID] != attempt || attempt.Context().Err() != nil {
+		return nil, false
 	}
+	existing := s.Clients[connID]
 	s.Clients[connID] = client
+	delete(s.connectingAttempts, connID)
+	delete(s.Connecting, connID)
+	return existing, true
 }
 
-// RemoveClient removes a client for a connection ID.
-func (s *AppState) RemoveClient(connID string) {
+// DetachConnection removes both the active client and in-flight attempt in a
+// single bounded transition. The returned cancellation callback must be
+// invoked outside the state lock.
+func (s *AppState) DetachConnection(connID string) DetachedConnection {
 	s.Mu.Lock()
 	defer s.Mu.Unlock()
-	if client, ok := s.Clients[connID]; ok {
-		client.Disconnect(context.Background())
-		delete(s.Clients, connID)
+	detached := DetachedConnection{ID: connID, Client: s.Clients[connID]}
+	if attempt := s.connectingAttempts[connID]; attempt != nil {
+		detached.Cancel = attempt.cancel
 	}
+	delete(s.Clients, connID)
+	delete(s.connectingAttempts, connID)
+	delete(s.Connecting, connID)
+	return detached
+}
+
+// DetachAll atomically removes all active clients and pending attempts. Driver
+// calls and cancellation callbacks are intentionally left to the caller.
+func (s *AppState) DetachAll() []DetachedConnection {
+	s.Mu.Lock()
+	defer s.Mu.Unlock()
+	byID := make(map[string]DetachedConnection, len(s.Clients)+len(s.connectingAttempts))
+	for id, client := range s.Clients {
+		byID[id] = DetachedConnection{ID: id, Client: client}
+	}
+	for id, attempt := range s.connectingAttempts {
+		detached := byID[id]
+		detached.ID = id
+		detached.Cancel = attempt.cancel
+		byID[id] = detached
+	}
+	result := make([]DetachedConnection, 0, len(byID))
+	for _, detached := range byID {
+		result = append(result, detached)
+	}
+	s.Clients = make(map[string]*mongo.Client)
+	s.Connecting = make(map[string]bool)
+	s.connectingAttempts = make(map[string]*ConnectionAttempt)
+	return result
 }
 
 // HasClient checks if a client exists for a connection ID.

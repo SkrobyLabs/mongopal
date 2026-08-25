@@ -203,47 +203,60 @@ export function ConnectionProvider({ children }: ConnectionProviderProps): React
       const go = getGo()
       if (go?.Disconnect) {
         await go.Disconnect(connId)
-        setActiveConnections(prev => prev.filter(id => id !== connId))
-        log(`Disconnected from "${connName}"`, { connectionId: connId })
-        onTabsClose?.(connId)
       }
+      log(`Disconnected from "${connName}"`, { connectionId: connId })
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err)
       log(`Failed to disconnect from "${connName}"`, { connectionId: connId, error: errorMessage })
       console.error('Failed to disconnect:', err)
       notify.error(getErrorSummary(errorMessage))
+    } finally {
+      // Backend detach happens before bounded driver cleanup. Mirror that
+      // logical boundary even if cleanup timed out or failed.
+      setActiveConnections(prev => prev.filter(id => id !== connId))
+      setSelectedConnection(prev => prev === connId ? null : prev)
+      setSelectedDatabase(prev => selectedConnection === connId ? null : prev)
+      setSelectedCollection(prev => selectedConnection === connId ? null : prev)
+      onTabsClose?.(connId)
     }
-  }, [connections, notify, log])
+  }, [connections, notify, log, selectedConnection])
 
   const disconnectAll = useCallback(async (onAllTabsClose?: () => void): Promise<void> => {
+	let failure: unknown
     try {
       const go = getGo()
       if (go?.DisconnectAll) {
         await go.DisconnectAll()
       }
+    } catch (err) {
+      failure = err
+      console.error('Failed to disconnect all:', err)
+      const errorMessage = err instanceof Error ? err.message : String(err)
+      notify.error(getErrorSummary(errorMessage))
+    } finally {
+      // Cleanup failures do not mean the backend still considers a client active.
       setActiveConnections([])
       setSelectedConnection(null)
       setSelectedDatabase(null)
       setSelectedCollection(null)
       onAllTabsClose?.()
-    } catch (err) {
-      console.error('Failed to disconnect all:', err)
-      const errorMessage = err instanceof Error ? err.message : String(err)
-      notify.error(getErrorSummary(errorMessage))
-      throw err
     }
+	if (failure !== undefined) throw failure
   }, [notify])
 
   const disconnectOthers = useCallback(async (keepConnId: string, onOtherTabsClose?: (keepConnId: string) => void): Promise<void> => {
+    const go = getGo()
+    const targets = activeConnections.filter(connId => connId !== keepConnId)
+    const results = await Promise.allSettled(targets.map(connId => go?.Disconnect ? go.Disconnect(connId) : Promise.resolve()))
+    // The backend has already logically detached every requested target, even
+    // when one bounded cleanup reports an error.
     try {
-      const go = getGo()
-      for (const connId of activeConnections) {
-        if (connId !== keepConnId && go?.Disconnect) {
-          await go.Disconnect(connId)
-        }
-      }
       setActiveConnections([keepConnId])
       onOtherTabsClose?.(keepConnId)
+      const rejected = results.find((result): result is PromiseRejectedResult => result.status === 'rejected')
+      if (rejected) {
+        throw rejected.reason
+      }
       notify.success('Other connections disconnected', { silent: true })
     } catch (err) {
       console.error('Failed to disconnect others:', err)

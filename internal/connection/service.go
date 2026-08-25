@@ -4,8 +4,11 @@ package connection
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -22,15 +25,39 @@ import (
 
 // Service handles MongoDB connection operations.
 type Service struct {
-	state     *core.AppState
-	connStore *storage.ConnectionService
+	state           *core.AppState
+	connStore       *storage.ConnectionService
+	clientOps       clientOperations
+	teardownTimeout time.Duration
+}
+
+const defaultTeardownTimeout = 5 * time.Second
+
+// clientOperations is a narrow test seam around driver lifecycle calls. The
+// rest of the package continues to use concrete mongo.Client values.
+type clientOperations struct {
+	connect    func(context.Context, string) (*mongo.Client, error)
+	ping       func(context.Context, *mongo.Client) error
+	disconnect func(context.Context, *mongo.Client) error
+}
+
+func defaultClientOperations() clientOperations {
+	return clientOperations{
+		connect: func(ctx context.Context, uri string) (*mongo.Client, error) {
+			return mongo.Connect(ctx, options.Client().ApplyURI(uri))
+		},
+		ping:       func(ctx context.Context, client *mongo.Client) error { return client.Ping(ctx, nil) },
+		disconnect: func(ctx context.Context, client *mongo.Client) error { return client.Disconnect(ctx) },
+	}
 }
 
 // NewService creates a new connection service.
 func NewService(state *core.AppState, connStore *storage.ConnectionService) *Service {
 	return &Service{
-		state:     state,
-		connStore: connStore,
+		state:           state,
+		connStore:       connStore,
+		clientOps:       defaultClientOperations(),
+		teardownTimeout: defaultTeardownTimeout,
 	}
 }
 
@@ -42,14 +69,15 @@ func (s *Service) Connect(connID string) error {
 	})
 
 	// Prevent concurrent connection attempts for the same ID
-	if err := s.state.StartConnecting(connID); err != nil {
+	attempt, err := s.state.StartConnecting(connID)
+	if err != nil {
 		debug.LogConnection("Connection blocked (concurrent attempt)", map[string]interface{}{
 			"connectionId": connID,
 			"error":        err.Error(),
 		})
 		return err
 	}
-	defer s.state.FinishConnecting(connID)
+	defer s.state.FinishConnecting(connID, attempt)
 
 	uri, err := s.connStore.GetConnectionURI(connID)
 	if err != nil {
@@ -60,11 +88,10 @@ func (s *Service) Connect(connID string) error {
 		return err
 	}
 
-	ctx, cancel := core.ContextWithConnectTimeout()
+	ctx, cancel := context.WithTimeout(attempt.Context(), core.DefaultConnectTimeout)
 	defer cancel()
 
-	clientOpts := options.Client().ApplyURI(uri)
-	client, err := mongo.Connect(ctx, clientOpts)
+	client, err := s.clientOps.connect(ctx, uri)
 	if err != nil {
 		debug.LogConnection("Failed to connect", map[string]interface{}{
 			"connectionId": connID,
@@ -75,17 +102,29 @@ func (s *Service) Connect(connID string) error {
 	}
 
 	// Ping to verify connection
-	if err := client.Ping(ctx, nil); err != nil {
-		client.Disconnect(context.Background())
+	if err := s.clientOps.ping(ctx, client); err != nil {
+		cleanupErr := s.teardownClient(context.Background(), connID, client)
 		debug.LogConnection("Failed to ping", map[string]interface{}{
 			"connectionId": connID,
 			"error":        err.Error(),
 			"durationMs":   time.Since(start).Milliseconds(),
 		})
-		return fmt.Errorf("failed to ping: %w", err)
+		return joinLifecycleError(fmt.Errorf("failed to ping: %w", err), cleanupErr)
 	}
 
-	s.state.SetClient(connID, client)
+	replaced, published := s.state.PublishClient(connID, attempt, client)
+	if !published {
+		cleanupErr := s.teardownClient(context.Background(), connID, client)
+		return joinLifecycleError(fmt.Errorf("connection attempt cancelled for %s", connID), cleanupErr)
+	}
+	if replaced != nil {
+		if err := s.teardownClient(context.Background(), connID, replaced); err != nil {
+			debug.LogConnection("Failed to clean up replaced connection", map[string]interface{}{
+				"connectionId": connID,
+				"error":        err.Error(),
+			})
+		}
+	}
 
 	// Update last accessed time (ignore error - non-critical)
 	_ = s.connStore.UpdateLastAccessed(connID)
@@ -103,7 +142,15 @@ func (s *Service) Disconnect(connID string) error {
 	debug.LogConnection("Disconnecting", map[string]interface{}{
 		"connectionId": connID,
 	})
-	s.state.RemoveClient(connID)
+	detached := s.state.DetachConnection(connID)
+	if detached.Cancel != nil {
+		detached.Cancel()
+	}
+	if detached.Client != nil {
+		if err := s.teardownClient(context.Background(), connID, detached.Client); err != nil {
+			return err
+		}
+	}
 	debug.LogConnection("Disconnected", map[string]interface{}{
 		"connectionId": connID,
 	})
@@ -112,11 +159,66 @@ func (s *Service) Disconnect(connID string) error {
 
 // DisconnectAll closes all MongoDB connections.
 func (s *Service) DisconnectAll() error {
-	clients := s.state.GetAllClients()
-	for id := range clients {
-		s.state.RemoveClient(id)
+	detached := s.state.DetachAll()
+	for _, connection := range detached {
+		if connection.Cancel != nil {
+			connection.Cancel()
+		}
+	}
+	return s.teardownAll(context.Background(), detached)
+}
+
+func joinLifecycleError(primary, cleanup error) error {
+	if cleanup == nil {
+		return primary
+	}
+	return errors.Join(primary, cleanup)
+}
+
+// teardownClient gives every driver close operation its own finite deadline.
+// Logical state has already been detached when this runs.
+func (s *Service) teardownClient(parent context.Context, connID string, client *mongo.Client) error {
+	ctx, cancel := context.WithTimeout(parent, s.teardownTimeout)
+	defer cancel()
+	start := time.Now()
+	err := s.clientOps.disconnect(ctx, client)
+	duration := time.Since(start)
+	if err != nil {
+		debug.LogConnection("Connection cleanup failed", map[string]interface{}{
+			"connectionId": connID,
+			"durationMs":   duration.Milliseconds(),
+			"error":        err.Error(),
+		})
+		return fmt.Errorf("disconnect %s after %s: %w", connID, duration.Round(time.Millisecond), err)
 	}
 	return nil
+}
+
+// teardownAll starts every cleanup before waiting, so one stalled cluster
+// cannot impose head-of-line blocking on the rest.
+func (s *Service) teardownAll(parent context.Context, detached []core.DetachedConnection) error {
+	var wg sync.WaitGroup
+	errs := make(chan error, len(detached))
+	for _, connection := range detached {
+		if connection.Client == nil {
+			continue
+		}
+		wg.Add(1)
+		go func(connection core.DetachedConnection) {
+			defer wg.Done()
+			if err := s.teardownClient(parent, connection.ID, connection.Client); err != nil {
+				errs <- err
+			}
+		}(connection)
+	}
+	wg.Wait()
+	close(errs)
+	collected := make([]error, 0, len(detached))
+	for err := range errs {
+		collected = append(collected, err)
+	}
+	sort.Slice(collected, func(i, j int) bool { return collected[i].Error() < collected[j].Error() })
+	return errors.Join(collected...)
 }
 
 // TestConnection tests a MongoDB URI and returns detailed server information.
@@ -484,11 +586,15 @@ func marshalBsonToJSON(m bson.M) (string, error) {
 
 // Shutdown closes all connections and cleans up resources.
 func (s *Service) Shutdown(ctx context.Context) {
-	clients := s.state.GetAllClients()
-	for id, client := range clients {
-		_ = client.Disconnect(ctx)
-		s.state.Mu.Lock()
-		delete(s.state.Clients, id)
-		s.state.Mu.Unlock()
+	detached := s.state.DetachAll()
+	for _, connection := range detached {
+		if connection.Cancel != nil {
+			connection.Cancel()
+		}
+	}
+	if err := s.teardownAll(ctx, detached); err != nil {
+		debug.LogConnection("Connection shutdown cleanup failed", map[string]interface{}{
+			"error": err.Error(),
+		})
 	}
 }

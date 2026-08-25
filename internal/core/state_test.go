@@ -5,7 +5,53 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"go.mongodb.org/mongo-driver/mongo"
 )
+
+func TestConnectionAttemptDetachAndStaleFinishAreSafe(t *testing.T) {
+	state := NewAppState()
+	first, err := state.StartConnecting("one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	detached := state.DetachConnection("one")
+	if detached.Cancel == nil {
+		t.Fatal("detach did not return the in-flight cancellation")
+	}
+	detached.Cancel()
+	select {
+	case <-first.Context().Done():
+	case <-time.After(time.Second):
+		t.Fatal("disconnect did not cancel the attempt")
+	}
+
+	second, err := state.StartConnecting("one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.FinishConnecting("one", first)
+	if _, err := state.StartConnecting("one"); err == nil {
+		t.Fatal("stale finish removed the newer attempt")
+	}
+	state.FinishConnecting("one", second)
+}
+
+func TestPublishClientRejectsDetachedAttempt(t *testing.T) {
+	state := NewAppState()
+	attempt, err := state.StartConnecting("one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	detached := state.DetachConnection("one")
+	detached.Cancel()
+	if _, ok := state.PublishClient("one", attempt, &mongo.Client{}); ok {
+		t.Fatal("detached attempt published a client")
+	}
+	if state.HasClient("one") {
+		t.Fatal("stale client became active")
+	}
+}
 
 func TestExportPauseResume(t *testing.T) {
 	state := NewAppState()
