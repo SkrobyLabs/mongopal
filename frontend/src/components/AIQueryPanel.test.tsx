@@ -1,3 +1,4 @@
+import React from 'react'
 import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest'
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { NotificationProvider } from './NotificationContext'
@@ -66,32 +67,120 @@ describe('AIQueryPanel', () => {
       expect(screen.getByText('Fetch adults.')).toBeInTheDocument()
     })
     expect(screen.getByText('db.users.find({ age: { $gt: 18 } })')).toBeInTheDocument()
-    expect(mockGenerate).toHaveBeenCalledWith('conn1', 'db', 'users', 'mongo', 'adults over 18', 'sonnet')
+    expect(mockGenerate).toHaveBeenCalledWith(
+      'conn1',
+      'db',
+      'users',
+      'mongo',
+      'adults over 18',
+      'sonnet'
+    )
   })
 
   it('inserts the query via onUseQuery without executing', async () => {
     mockGenerate.mockResolvedValue(result)
-    const { onUseQuery } = renderPanel()
+    const { onUseQuery, onClose } = renderPanel()
 
-    fireEvent.change(screen.getByPlaceholderText(/Describe the query/i), { target: { value: 'x' } })
+    fireEvent.change(screen.getByPlaceholderText(/Describe the query/i), {
+      target: { value: 'x' },
+    })
     fireEvent.click(screen.getByRole('button', { name: /Generate query/i }))
     await waitFor(() => screen.getByText('db.users.find({ age: { $gt: 18 } })'))
 
-    fireEvent.click(screen.getByRole('button', { name: /Use query/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Update query/i }))
     expect(onUseQuery).toHaveBeenCalledWith('db.users.find({ age: { $gt: 18 } })')
+    expect(onClose).toHaveBeenCalledOnce()
+  })
+
+  it('cancel discards a generated query without updating the editor', async () => {
+    mockGenerate.mockResolvedValue(result)
+    const { onUseQuery, onClose } = renderPanel()
+    expect(screen.getByRole('button', { name: 'Update query' })).toBeDisabled()
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'adults' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Generate query' }))
+    await screen.findByText('Fetch adults.')
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(onClose).toHaveBeenCalledOnce()
+    expect(onUseQuery).not.toHaveBeenCalled()
+  })
+
+  it('keeps generation shortcuts from reaching the query editor', async () => {
+    mockGenerate.mockResolvedValue(result)
+    const shortcut = vi.fn()
+    window.addEventListener('keydown', shortcut)
+    renderPanel()
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'adults' } })
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter', ctrlKey: true })
+    await screen.findByText('Fetch adults.')
+    expect(shortcut).not.toHaveBeenCalled()
+    window.removeEventListener('keydown', shortcut)
+  })
+
+  it('can cancel during generation and ignores completion after unmount', async () => {
+    let resolve!: (value: AIQueryResult) => void
+    mockGenerate.mockReturnValue(
+      new Promise<AIQueryResult>((r) => {
+        resolve = r
+      })
+    )
+    const onUseQuery = vi.fn()
+    function Assistant() {
+      const [open, setOpen] = React.useState(true)
+      return open ? (
+        <AIQueryPanel
+          connectionId="conn1"
+          database="db"
+          collection="users"
+          queryMode="mongo"
+          model="sonnet"
+          onUseQuery={onUseQuery}
+          onClose={() => setOpen(false)}
+        />
+      ) : null
+    }
+    render(
+      <NotificationProvider>
+        <Assistant />
+      </NotificationProvider>
+    )
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'adults' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Generate query' }))
+    expect(screen.getByRole('button', { name: 'Update query' })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await act(async () => {
+      resolve(result)
+    })
+    expect(screen.queryByRole('region')).not.toBeInTheDocument()
+    expect(onUseQuery).not.toHaveBeenCalled()
+  })
+
+  it('focuses the prompt without trapping keyboard navigation', () => {
+    renderPanel()
+    expect(screen.getByRole('textbox')).toHaveFocus()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    const cancel = screen.getByRole('button', { name: 'Cancel' })
+    cancel.focus()
+    expect(fireEvent.keyDown(cancel, { key: 'Tab' })).toBe(true)
+    const close = screen.getByRole('button', { name: 'Close AI assistant' })
+    close.focus()
+    expect(fireEvent.keyDown(close, { key: 'Tab', shiftKey: true })).toBe(true)
   })
 
   it('copies the query to the clipboard', async () => {
     mockGenerate.mockResolvedValue(result)
     renderPanel()
 
-    fireEvent.change(screen.getByPlaceholderText(/Describe the query/i), { target: { value: 'x' } })
+    fireEvent.change(screen.getByPlaceholderText(/Describe the query/i), {
+      target: { value: 'x' },
+    })
     fireEvent.click(screen.getByRole('button', { name: /Generate query/i }))
     await waitFor(() => screen.getByText('db.users.find({ age: { $gt: 18 } })'))
 
     fireEvent.click(screen.getByRole('button', { name: /^Copy$/i }))
     await waitFor(() => {
-      expect(navigator.clipboard.writeText).toHaveBeenCalledWith('db.users.find({ age: { $gt: 18 } })')
+      expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+        'db.users.find({ age: { $gt: 18 } })'
+      )
     })
   })
 
@@ -99,7 +188,9 @@ describe('AIQueryPanel', () => {
     mockGenerate.mockRejectedValue(new Error('anthropic request failed: 401 invalid api key'))
     renderPanel()
 
-    fireEvent.change(screen.getByPlaceholderText(/Describe the query/i), { target: { value: 'x' } })
+    fireEvent.change(screen.getByPlaceholderText(/Describe the query/i), {
+      target: { value: 'x' },
+    })
     fireEvent.click(screen.getByRole('button', { name: /Generate query/i }))
 
     await waitFor(() => {
@@ -111,7 +202,9 @@ describe('AIQueryPanel', () => {
     mockGenerate.mockRejectedValue(new Error('query generation failed: context deadline exceeded'))
     renderPanel()
 
-    fireEvent.change(screen.getByPlaceholderText(/Describe the query/i), { target: { value: 'x' } })
+    fireEvent.change(screen.getByPlaceholderText(/Describe the query/i), {
+      target: { value: 'x' },
+    })
     fireEvent.click(screen.getByRole('button', { name: /Generate query/i }))
 
     await waitFor(() => {
@@ -123,7 +216,9 @@ describe('AIQueryPanel', () => {
     mockGenerate.mockResolvedValue(undefined)
     renderPanel()
 
-    fireEvent.change(screen.getByPlaceholderText(/Describe the query/i), { target: { value: 'x' } })
+    fireEvent.change(screen.getByPlaceholderText(/Describe the query/i), {
+      target: { value: 'x' },
+    })
     fireEvent.click(screen.getByRole('button', { name: /Generate query/i }))
 
     await waitFor(() => {
@@ -140,13 +235,22 @@ describe('AIQueryPanel', () => {
     fireEvent.keyDown(textarea, { key: 'Enter', metaKey: true })
 
     await waitFor(() => {
-      expect(mockGenerate).toHaveBeenCalledWith('conn1', 'db', 'users', 'mongo', 'via keyboard', 'sonnet')
+      expect(mockGenerate).toHaveBeenCalledWith(
+        'conn1',
+        'db',
+        'users',
+        'mongo',
+        'via keyboard',
+        'sonnet'
+      )
     })
   })
 
   it('closes on Escape', () => {
     const { onClose } = renderPanel()
-    fireEvent.keyDown(screen.getByRole('region', { name: /AI query assistant/i }), { key: 'Escape' })
+    fireEvent.keyDown(screen.getByRole('region', { name: /AI query assistant/i }), {
+      key: 'Escape',
+    })
     expect(onClose).toHaveBeenCalled()
   })
 
@@ -155,7 +259,11 @@ describe('AIQueryPanel', () => {
     const first = new Promise<AIQueryResult>((r) => {
       resolveFirst = r
     })
-    const second: AIQueryResult = { ...result, query: 'db.users.find({ newest: true })', explanation: 'Newest.' }
+    const second: AIQueryResult = {
+      ...result,
+      query: 'db.users.find({ newest: true })',
+      explanation: 'Newest.',
+    }
     mockGenerate.mockReturnValueOnce(first).mockResolvedValueOnce(second)
 
     renderPanel()

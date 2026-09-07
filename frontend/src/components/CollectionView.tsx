@@ -62,7 +62,7 @@ export interface CollectionViewProps {
 /**
  * View mode options for document display
  */
-type ViewMode = 'table' | 'json' | 'explain' | 'ai'
+type ViewMode = 'table' | 'json' | 'explain'
 
 /**
  * Props for icon components
@@ -364,31 +364,19 @@ export default function CollectionView({
   const [viewMode, setViewMode] = useState<ViewMode>('table')
 
   // AI query assistant (F077). Settings are read on mount (localStorage-backed,
-  // same mechanism other consumers use). The assistant is one-shot: opening
-  // switches to a temporary 'ai' view; closing restores the previous view.
+  // same mechanism other consumers use). The one-shot side panel leaves the workspace interactive.
   const [aiSettings] = useState<Pick<AppSettings, 'aiEnabled' | 'aiModel'>>(() => {
     const s = loadSettings()
     return { aiEnabled: s.aiEnabled, aiModel: s.aiModel }
   })
   const [aiAssistOpen, setAiAssistOpen] = useState<boolean>(false)
-  const prevViewModeRef = useRef<ViewMode>('table')
-
   const closeAiAssist = useCallback((): void => {
     setAiAssistOpen(false)
-    // Avoid re-triggering explain on restore.
-    const restore = prevViewModeRef.current === 'explain' ? 'table' : prevViewModeRef.current
-    setViewMode(restore)
   }, [])
 
   const toggleAiAssist = useCallback((): void => {
-    if (aiAssistOpen) {
-      closeAiAssist()
-    } else {
-      prevViewModeRef.current = viewMode
-      setAiAssistOpen(true)
-      setViewMode('ai')
-    }
-  }, [aiAssistOpen, viewMode, closeAiAssist])
+    setAiAssistOpen((open) => !open)
+  }, [])
 
   // Monaco editor refs
   const monacoRef = useRef<MonacoInstance | null>(null)
@@ -897,7 +885,8 @@ export default function CollectionView({
   )
 
   return (
-    <div className="h-full flex flex-col">
+    <div className="h-full min-h-0 flex overflow-hidden">
+    <div className="min-w-0 flex-1 flex flex-col">
       {/* Query bar - overflow-visible for dropdown */}
       <div className="flex-shrink-0 p-2 border-b border-border bg-surface-secondary overflow-visible">
         <div className="flex flex-col gap-2">
@@ -1173,7 +1162,7 @@ export default function CollectionView({
       <div className="flex-shrink-0 flex items-center justify-between px-3 py-1.5 border-b border-border bg-surface text-sm">
         <div className="flex items-center gap-3">
           <div className="flex gap-1" role="tablist" aria-label="View mode">
-            {([...(['table', 'json', 'explain'] as ViewMode[]), ...(aiAssistOpen ? (['ai'] as ViewMode[]) : [])]).map((mode) => (
+            {(['table', 'json', 'explain'] as ViewMode[]).map((mode) => (
               <button
                 key={mode}
                 className={`view-mode-btn px-2 py-1 rounded text-xs capitalize ${
@@ -1184,15 +1173,9 @@ export default function CollectionView({
                 onClick={() => {
                   if (mode === 'explain') {
                     if (!queryExec.isConnected) return
-                    setAiAssistOpen(false)
                     setViewMode('explain')
                     queryExec.explainQuery()
-                  } else if (mode === 'ai') {
-                    setViewMode('ai')
                   } else {
-                    // Switching to a data view closes the one-shot assistant so
-                    // the AI tab and sparkle pressed-state don't linger.
-                    setAiAssistOpen(false)
                     setViewMode(mode)
                   }
                 }}
@@ -1200,7 +1183,7 @@ export default function CollectionView({
                 role="tab"
                 aria-selected={viewMode === mode}
               >
-                {mode === 'ai' ? 'AI' : mode}
+                {mode}
               </button>
             ))}
           </div>
@@ -1214,7 +1197,7 @@ export default function CollectionView({
         <div
           className={`flex items-center gap-2 text-text-muted text-xs ${
             queryExec.paginationResetHighlight ? 'pagination-reset-highlight' : ''
-          } ${viewMode === 'explain' || viewMode === 'ai' ? 'invisible' : ''}`}
+          } ${viewMode === 'explain' ? 'invisible' : ''}`}
         >
           {queryExec.resultKind === 'aggregate' ? (
             <span>
@@ -1505,22 +1488,6 @@ export default function CollectionView({
               Run Query
             </button>
           </div>
-        ) : viewMode === 'ai' ? (
-          <AIQueryPanel
-            connectionId={connectionId}
-            database={database}
-            collection={collection}
-            queryMode={queryExec.queryMode}
-            model={aiSettings.aiModel}
-            onUseQuery={(q) => {
-              if (queryExec.queryMode === 'sql') {
-                queryExec.setSqlQuery(q)
-              } else {
-                queryExec.setQuery(q)
-              }
-            }}
-            onClose={closeAiAssist}
-          />
         ) : queryExec.loading ? (
           <div className="h-full flex flex-col items-center justify-center text-text-muted gap-3">
             <div className="spinner" />
@@ -1766,6 +1733,29 @@ export default function CollectionView({
         }}
         onQueriesChanged={() => setSavedQueriesRefreshKey((k) => k + 1)}
       />
+    </div>
+
+      {aiAssistOpen && (
+        <aside className="w-[360px] max-w-[45%] min-h-0 shrink-0 border-l border-border">
+          <AIQueryPanel
+            key={`${connectionId}:${database}:${collection}:${queryExec.queryMode}`}
+            connectionId={connectionId}
+            database={database}
+            collection={collection}
+            queryMode={queryExec.queryMode}
+            model={aiSettings.aiModel}
+            onUseQuery={(q) => {
+              if (queryExec.queryMode === 'sql') {
+                queryExec.setSqlQuery(q)
+              } else {
+                queryExec.setQuery(q)
+              }
+            }}
+            onClose={closeAiAssist}
+          />
+        </aside>
+      )}
+
     </div>
   )
 }

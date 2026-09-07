@@ -4,11 +4,14 @@
 ## What it does
 
 Turns a plain-language description ("the ten most recent orders over $100") into a runnable
-query. The user types intent, picks the target dialect (native MongoDB or SQL), and the
-assistant returns a generated query plus a short explanation, which can be copied or dropped
-straight into the editor. Each generation is a fresh, one-shot request — there is no chat
-history or multi-turn conversation — and the panel reports the token counts for the call so
-cost stays visible.
+query. Clicking AI opens a right-hand panel using the active editor's language mode (native MongoDB
+or SQL) and the existing collection/schema context. The user describes what they need,
+generates a query, and reviews the query and explanation. **Update query** replaces the
+active editor's query and closes the panel without executing it. **Cancel** closes the
+panel without changing the query. The generated query can also be copied.
+The workspace stays interactive, so the user can explore schema and examples or edit the
+query while the assistant is open.
+Each generation is a fresh, one-shot request; closing discards the panel's state.
 
 ## Why it exists
 

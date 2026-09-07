@@ -10,7 +10,7 @@ export interface AIQueryPanelProps {
   queryMode: string
   /** Model alias to use ('sonnet' | 'haiku'). */
   model: string
-  /** Called with the generated query when the user clicks "Use query". */
+  /** Called with the generated query when the user clicks "Update query". */
   onUseQuery: (query: string) => void
   /** Close the assistant. */
   onClose: () => void
@@ -36,7 +36,7 @@ const CloseIcon = ({ className = 'w-4 h-4' }: { className?: string }): JSX.Eleme
 /**
  * One-shot AI query assistant (F077). The user describes a query in plain words
  * and receives a generated query in the active language mode. No history is
- * kept — closing or switching away discards all state.
+ * kept — closing discards all state.
  */
 export default function AIQueryPanel({
   connectionId,
@@ -57,14 +57,21 @@ export default function AIQueryPanel({
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
 
   useEffect(() => {
+    const requestState = requestIdRef
+    const previousFocus = document.activeElement as HTMLElement | null
     textareaRef.current?.focus()
+    return () => {
+      ++requestState.current
+      previousFocus?.focus()
+    }
   }, [])
 
-  // Escape closes the panel, consistent with the app's panel convention.
+  // Prevent assistant shortcuts from triggering editor actions; Tab remains unrestricted.
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLDivElement>): void => {
+      e.stopPropagation()
       if (e.key === 'Escape') {
-        e.stopPropagation()
+        e.preventDefault()
         onClose()
       }
     },
@@ -137,22 +144,25 @@ export default function AIQueryPanel({
   const handleUse = useCallback((): void => {
     if (!result?.query) return
     onUseQuery(result.query)
-    notify.success('Query inserted — press Run to execute')
-  }, [result, onUseQuery, notify])
+    notify.success('Query updated — press Run to execute')
+    onClose()
+  }, [result, onUseQuery, onClose, notify])
 
   return (
     <div
       role="region"
       aria-label="AI query assistant"
-      className="h-full flex flex-col p-4 overflow-auto"
+      className="h-full min-h-0 bg-surface text-text flex flex-col p-4 overflow-auto"
       onKeyDown={handleKeyDown}
     >
       {/* Header */}
       <div className="flex items-center justify-between mb-3">
-        <div className="flex items-center gap-2 text-text">
+        <div className="flex flex-wrap items-center gap-2 text-text">
           <SparkleIcon className="w-4 h-4 text-primary" />
           <span className="text-sm font-medium">AI query assistant</span>
-          <span className="text-xs px-1.5 py-0.5 rounded bg-surface-hover text-text-muted">{modeLabel}</span>
+          <span className="text-xs px-1.5 py-0.5 rounded bg-surface-hover text-text-muted">
+            {modeLabel}
+          </span>
           <span className="text-xs text-text-dim">{collection}</span>
         </div>
         <button
@@ -165,8 +175,15 @@ export default function AIQueryPanel({
         </button>
       </div>
 
+      <p className="text-xs text-text-muted mb-3 break-words">
+        {database} / {collection} · {modeLabel}. Uses the collection name and inferred schema.
+      </p>
+      <label className="text-sm font-medium mb-2" htmlFor="ai-query-prompt">
+        What would you like to query?
+      </label>
       {/* Prompt input */}
       <textarea
+        id="ai-query-prompt"
         ref={textareaRef}
         className="input w-full resize-none font-sans text-sm"
         rows={3}
@@ -190,7 +207,7 @@ export default function AIQueryPanel({
 
       {/* Loading */}
       {loading && (
-        <div className="flex items-center gap-2 text-text-muted text-sm mt-4">
+        <div className="flex flex-wrap items-center gap-2 text-text-muted text-sm mt-4">
           <div className="spinner" />
           <span>Generating query…</span>
         </div>
@@ -198,7 +215,9 @@ export default function AIQueryPanel({
 
       {/* Error */}
       {error && !loading && (
-        <div className="mt-4 p-3 rounded border border-error/40 bg-error/10 text-error text-sm">{error}</div>
+        <div className="mt-4 p-3 rounded border border-error/40 bg-error/10 text-error text-sm">
+          {error}
+        </div>
       )}
 
       {/* Result */}
@@ -209,15 +228,27 @@ export default function AIQueryPanel({
             {result.query}
           </pre>
           <div className="flex items-center gap-2">
-            <button className="btn btn-primary" onClick={handleUse}>
-              Use query
-            </button>
             <button className="btn btn-secondary" onClick={() => void handleCopy()}>
               Copy
             </button>
           </div>
         </div>
       )}
+      <div className="mt-4 pt-3 border-t border-border flex items-center justify-end gap-2">
+        <button className="btn btn-secondary" onClick={onClose}>
+          Cancel
+        </button>
+        <button
+          className="btn btn-primary"
+          disabled={loading || !result?.query?.trim()}
+          onClick={handleUse}
+        >
+          Update query
+        </button>
+      </div>
+      <p className="text-xs text-text-dim mt-2 text-right">
+        Updates the active editor. Run the query when you’re ready.
+      </p>
     </div>
   )
 }

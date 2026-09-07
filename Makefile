@@ -44,7 +44,7 @@ help:
 	@echo ""
 	@echo "Development:"
 	@echo "  dev            Start development server with hot-reload"
-	@echo "  run            Build and launch the application"
+	@echo "  run            Stop running instances, build and launch the application"
 	@echo "  generate       Generate Wails bindings"
 	@echo "  doctor         Run Wails doctor to verify setup"
 	@echo ""
@@ -154,8 +154,25 @@ build/appicon.png: build/appicon.svg
 build: .require-wails appicon generate
 	$(WAILS) build $(BUILD_TAG_FLAGS) -ldflags "$(VERSION_LDFLAGS)"
 
-# Build and launch the current platform executable.
-run: build
+# Stop old instances before building (Windows locks running executables).
+# Keep build in the recipe so make -j cannot build before shutdown completes.
+run:
+ifeq ($(DETECTED_OS),Windows)
+	@MSYS_NO_PATHCONV=1 taskkill /F /IM MongoPal.exe 2>/dev/null || [ $$? -eq 128 ]
+else
+	@echo "Stopping running MongoPal instances..."
+	@pkill -TERM -u "$$(id -u)" -x '[Mm]ongo[Pp]al' || [ $$? -eq 1 ]
+	@attempt=0; \
+	while pgrep -u "$$(id -u)" -x '[Mm]ongo[Pp]al' >/dev/null; do \
+		if [ $$attempt -ge 5 ]; then \
+			pkill -KILL -u "$$(id -u)" -x '[Mm]ongo[Pp]al' || { [ $$? -eq 1 ] || exit 1; }; \
+			break; \
+		fi; \
+		sleep 1; \
+		attempt=$$((attempt + 1)); \
+	done
+endif
+	$(MAKE) build
 ifeq ($(DETECTED_OS),Windows)
 	@if [ -x build/bin/MongoPal.exe ]; then \
 		./build/bin/MongoPal.exe; \
